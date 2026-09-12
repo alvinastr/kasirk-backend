@@ -1,0 +1,211 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model categories {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id  String     @db.Uuid
+  name       String     @db.VarChar(100)
+  created_at DateTime   @default(now()) @db.Timestamptz(6)
+  tenants    tenants    @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_categories_tenant")
+  products   products[]
+
+  @@unique([tenant_id, name], map: "uq_categories_tenant_name")
+  @@index([tenant_id], map: "idx_categories_tenant_id")
+}
+
+model outlets {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id         String              @db.Uuid
+  name              String              @db.VarChar(100)
+  address           String?
+  is_active         Boolean             @default(true)
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  tenants           tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_outlets_tenant")
+  product_stocks    product_stocks[]
+  stock_adjustments stock_adjustments[]
+  stock_movements   stock_movements[]
+  transactions      transactions[]
+  users             users[]
+
+  @@index([tenant_id], map: "idx_outlets_tenant_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model payments {
+  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  transaction_id     String       @db.Uuid
+  method             String       @db.VarChar(20)
+  status             String       @default("PENDING") @db.VarChar(20)
+  amount             BigInt
+  provider           String?      @db.VarChar(50)
+  provider_reference String?      @db.VarChar(255)
+  paid_at            DateTime?    @db.Timestamptz(6)
+  created_at         DateTime     @default(now()) @db.Timestamptz(6)
+  transactions       transactions @relation(fields: [transaction_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_payments_transaction")
+
+  @@index([transaction_id], map: "idx_payments_transaction_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model product_stocks {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  outlet_id  String   @db.Uuid
+  product_id String   @db.Uuid
+  stock      Int      @default(0)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  outlets    outlets  @relation(fields: [outlet_id], references: [id], onUpdate: NoAction, map: "fk_product_stocks_outlet")
+  products   products @relation(fields: [product_id], references: [id], onUpdate: NoAction, map: "fk_product_stocks_product")
+
+  @@unique([outlet_id, product_id], map: "uq_product_stocks_outlet_product")
+  @@index([product_id], map: "idx_product_stocks_product_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model products {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id         String              @db.Uuid
+  category_id       String?             @db.Uuid
+  name              String              @db.VarChar(150)
+  sku               String              @db.VarChar(100)
+  price             BigInt              @default(0)
+  cost              BigInt              @default(0)
+  minimum_stock     Int                 @default(0)
+  is_active         Boolean             @default(true)
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  product_stocks    product_stocks[]
+  categories        categories?         @relation(fields: [category_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_products_category")
+  tenants           tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_products_tenant")
+  stock_adjustments stock_adjustments[]
+  stock_movements   stock_movements[]
+  transaction_items transaction_items[]
+
+  @@unique([tenant_id, sku], map: "uq_products_tenant_sku")
+  @@index([category_id], map: "idx_products_category_id")
+  @@index([tenant_id], map: "idx_products_tenant_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model stock_adjustments {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id  String   @db.Uuid
+  outlet_id  String   @db.Uuid
+  product_id String   @db.Uuid
+  user_id    String   @db.Uuid
+  type       String   @db.VarChar(10)
+  quantity   Int
+  reason     String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  outlets    outlets  @relation(fields: [outlet_id], references: [id], onUpdate: NoAction, map: "fk_stock_adjustments_outlet")
+  products   products @relation(fields: [product_id], references: [id], onUpdate: NoAction, map: "fk_stock_adjustments_product")
+  tenants    tenants  @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_stock_adjustments_tenant")
+  users      users    @relation(fields: [user_id], references: [id], onUpdate: NoAction, map: "fk_stock_adjustments_user")
+
+  @@index([created_at], map: "idx_stock_adjustments_created_at")
+  @@index([outlet_id], map: "idx_stock_adjustments_outlet_id")
+  @@index([product_id], map: "idx_stock_adjustments_product_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model stock_movements {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id      String   @db.Uuid
+  outlet_id      String   @db.Uuid
+  product_id     String   @db.Uuid
+  user_id        String   @db.Uuid
+  type           String   @db.VarChar(20)
+  quantity       Int
+  reference_type String?  @db.VarChar(50)
+  reference_id   String?  @db.Uuid
+  reason         String?
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  outlets        outlets  @relation(fields: [outlet_id], references: [id], onUpdate: NoAction, map: "fk_stock_movements_outlet")
+  products       products @relation(fields: [product_id], references: [id], onUpdate: NoAction, map: "fk_stock_movements_product")
+  tenants        tenants  @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_stock_movements_tenant")
+  users          users    @relation(fields: [user_id], references: [id], onUpdate: NoAction, map: "fk_stock_movements_user")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model tenants {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name              String              @db.VarChar(100)
+  address           String?
+  tax_rate          Decimal             @default(0) @db.Decimal(5, 2)
+  is_active         Boolean             @default(true)
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  categories        categories[]
+  outlets           outlets[]
+  products          products[]
+  stock_adjustments stock_adjustments[]
+  stock_movements   stock_movements[]
+  transactions      transactions[]
+  users             users[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model transaction_items {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  transaction_id String       @db.Uuid
+  product_id     String       @db.Uuid
+  quantity       Int
+  unit_price     BigInt
+  unit_cost      BigInt
+  subtotal       BigInt
+  products       products     @relation(fields: [product_id], references: [id], onUpdate: NoAction, map: "fk_transaction_items_product")
+  transactions   transactions @relation(fields: [transaction_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_transaction_items_transaction")
+
+  @@index([product_id], map: "idx_transaction_items_product_id")
+  @@index([transaction_id], map: "idx_transaction_items_transaction_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model transactions {
+  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id             String              @db.Uuid
+  outlet_id             String              @db.Uuid
+  user_id               String              @db.Uuid
+  client_transaction_id String              @db.Uuid
+  status                String              @default("PENDING") @db.VarChar(20)
+  subtotal              BigInt              @default(0)
+  discount              BigInt              @default(0)
+  tax                   BigInt              @default(0)
+  total                 BigInt              @default(0)
+  created_at            DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime            @default(now()) @db.Timestamptz(6)
+  payments              payments[]
+  transaction_items     transaction_items[]
+  outlets               outlets             @relation(fields: [outlet_id], references: [id], onUpdate: NoAction, map: "fk_transactions_outlet")
+  tenants               tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_transactions_tenant")
+  users                 users               @relation(fields: [user_id], references: [id], onUpdate: NoAction, map: "fk_transactions_user")
+
+  @@unique([tenant_id, client_transaction_id], map: "uq_transactions_client_id")
+  @@index([outlet_id, created_at], map: "idx_transactions_outlet_created_at")
+  @@index([outlet_id], map: "idx_transactions_outlet_id")
+  @@index([tenant_id], map: "idx_transactions_tenant_id")
+  @@index([user_id], map: "idx_transactions_user_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model users {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id         String              @db.Uuid
+  outlet_id         String?             @db.Uuid
+  name              String              @db.VarChar(100)
+  email             String              @db.VarChar(255)
+  password_hash     String
+  role              String              @db.VarChar(20)
+  is_active         Boolean             @default(true)
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  stock_adjustments stock_adjustments[]
+  stock_movements   stock_movements[]
+  transactions      transactions[]
+  outlets           outlets?            @relation(fields: [outlet_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_users_outlet")
+  tenants           tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_users_tenant")
+
+  @@unique([tenant_id, email], map: "uq_users_tenant_email")
+  @@index([tenant_id], map: "idx_users_tenant_id")
+}
