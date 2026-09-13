@@ -8,6 +8,8 @@ import { ProductsModule } from './products/products.module';
 import { CategoriesModule } from './categories/categories.module';
 import { OutletsModule } from './outlets/outlets.module';
 import { UsersModule } from './users/users.module';
+import { StockController } from './stock/stock.controller';
+import { StockModule } from './stock/stock.module';
 
 @Module({
   imports: [
@@ -26,9 +28,12 @@ import { UsersModule } from './users/users.module';
     OutletsModule,
 
     UsersModule,
+
+    StockModule,
   ],
   controllers: [
     AppController,
+    StockController,
   ],
   providers: [
     AppService,
