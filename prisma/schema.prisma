@@ -72,8 +72,8 @@ model products {
   category_id       String?             @db.Uuid
   name              String              @db.VarChar(150)
   sku               String              @db.VarChar(100)
-  price             BigInt              @default(0)
-  cost              BigInt              @default(0)
+  price             Int                 @default(0)
+  cost              Int                 @default(0)
   minimum_stock     Int                 @default(0)
   is_active         Boolean             @default(true)
   created_at        DateTime            @default(now()) @db.Timestamptz(6)

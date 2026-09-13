@@ -8,7 +8,6 @@ import { AuthModule } from '../auth/auth.module';
   imports: [
     PrismaModule,
     AuthModule,
-    ProductsModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService]
