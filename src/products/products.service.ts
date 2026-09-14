@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import type { JwtPayload } from '../auth/types/jwt-payload.type';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -29,6 +29,16 @@ export class ProductsService {
         user:JwtPayload,
         dto:CreateProductDto
     ){
+        if (dto.category_id != null) {
+            const category = await this.prisma.categories.findFirst({
+                where: { id: dto.category_id, tenant_id: user.tenant_id },
+                select: { id: true },
+            });
+            if (!category) {
+                throw new NotFoundException('Category not found');
+            }
+        }
+
         return this.prisma.products.create({
             data:{
                 tenant_id:user.tenant_id,

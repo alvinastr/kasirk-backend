@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "incremental": false
+  },
+  "include": [
+    "../src/**/*.ts",
+    "./hardening.integration.ts"
+  ],
+  "exclude": [
+    "../src/**/*.spec.ts"
+  ]
+}

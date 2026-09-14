@@ -33,7 +33,6 @@ import { StockModule } from './stock/stock.module';
   ],
   controllers: [
     AppController,
-    StockController,
   ],
   providers: [
     AppService,

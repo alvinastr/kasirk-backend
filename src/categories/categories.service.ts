@@ -15,8 +15,7 @@ export class CategoriesService {
     ) {
         return this.prisma.categories.findMany({
             where: {
-                tenant_id: user.tenant_id,
-                is_active: true
+                tenant_id: user.tenant_id
             }
         });
     }
