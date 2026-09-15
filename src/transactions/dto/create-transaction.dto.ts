@@ -6,6 +6,7 @@ import {
     IsDefined,
     IsInt,
     IsObject,
+    IsOptional,
     IsUUID,
     Max,
     Min,
@@ -21,6 +22,10 @@ export class CreateTransactionDto {
 
     @IsUUID()
     outlet_id: string;
+
+    @IsOptional()
+    @IsUUID()
+    customer_id?: string;
 
     @IsArray()
     @ArrayMinSize(1)

@@ -24,6 +24,7 @@ const summarySelect = {
     client_transaction_id: true,
     outlet_id: true,
     user_id: true,
+    customer_id: true,
     status: true,
     subtotal: true,
     discount: true,
@@ -68,6 +69,7 @@ export class TransactionsService {
         const actorContext = { ...user, sub: user.sub.toLowerCase(), tenant_id: user.tenant_id.toLowerCase() };
         dto.discount = dto.discount ?? 0;
         dto.outlet_id = dto.outlet_id.toLowerCase();
+        dto.customer_id = dto.customer_id?.toLowerCase();
         dto.client_transaction_id = dto.client_transaction_id.toLowerCase();
         dto.items = dto.items.map((item) => ({ ...item, product_id: item.product_id.toLowerCase() }))
             .sort((a, b) => a.product_id.localeCompare(b.product_id));
@@ -215,6 +217,13 @@ export class TransactionsService {
             select: { id: true },
         });
         if (!outlet) throw new NotFoundException('Outlet not found');
+        if (dto.customer_id) {
+            const customer = await tx.customers.findFirst({
+                where: { id: dto.customer_id, tenant_id: user.tenant_id },
+                select: { id: true },
+            });
+            if (!customer) throw new NotFoundException('Customer not found');
+        }
         if (dto.discount > 0 && actor.role === 'CASHIER') {
             throw new ForbiddenException('Manual discount requires OWNER or ADMIN');
         }
@@ -257,6 +266,7 @@ export class TransactionsService {
                 tenant_id: user.tenant_id,
                 outlet_id: dto.outlet_id,
                 user_id: user.sub,
+                customer_id: dto.customer_id ?? null,
                 client_transaction_id: dto.client_transaction_id,
                 status: TransactionStatus.PENDING,
                 subtotal, discount, tax, total,
@@ -318,6 +328,7 @@ export class TransactionsService {
     private assertSameRequest(existing: TransactionRecord, user: JwtPayload, dto: CreateTransactionDto) {
         const payment = existing.payments[0];
         const same = existing.user_id === user.sub && existing.outlet_id === dto.outlet_id &&
+            existing.customer_id === (dto.customer_id ?? null) &&
             existing.discount === BigInt(dto.discount) && existing.payments.length === 1 &&
             payment.method === PaymentMethod.CASH && payment.amount === BigInt(dto.payment.amount!) &&
             existing.transaction_items.length === dto.items.length &&
@@ -341,6 +352,7 @@ export class TransactionsService {
             client_transaction_id: transaction.client_transaction_id,
             outlet_id: transaction.outlet_id,
             user_id: transaction.user_id,
+            customer_id: transaction.customer_id,
             status: transaction.status,
             subtotal: this.money(transaction.subtotal),
             discount: this.money(transaction.discount),

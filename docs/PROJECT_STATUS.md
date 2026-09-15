@@ -117,6 +117,34 @@ Models:
 -   stock_adjustments
 -   stock_movements
 
+### Transaction
+
+Status: ✅ Done
+
+Features:
+
+-   Checkout transaction
+-   Payment processing
+-   Stock deduction
+-   Customer optional relation
+-   Idempotency protection
+-   Transaction history
+
+### Customer
+
+Status: ✅ Done
+
+Purpose:
+Menyimpan data pelanggan per tenant.
+
+Features:
+
+-   Customer CRUD
+-   Tenant isolation
+-   Unique phone per tenant
+-   Customer transaction history
+-   Optional relation dengan transaction
+
 ### Transaction Database Layer
 
 Status: ✅ Completed
@@ -237,6 +265,18 @@ Verified:
 - Decrease stock success
 - Insufficient stock rejected
 
+### Reports Module
+
+Status: Completed
+
+Features:
+
+- Daily sales report
+- Sales summary
+- Top products
+- COGS calculation
+- Profit calculation
+
 ------------------------------------------------------------------------
 
 ## Transaction Module Status
@@ -261,6 +301,53 @@ Verified:
 - Stock deduction
 - Duplicate request handling
 - Transaction listing
+
+Additional Features:
+
+- Optional customer assignment
+- Customer validation by tenant
+- Customer included in transaction response
+- Idempotency validation includes customer_id
+
+------------------------------------------------------------------------
+
+## Customer Module
+
+Status:
+
+✅ Completed
+
+Endpoints:
+
+    GET    /customers
+    POST   /customers
+    GET    /customers/:id
+    PATCH  /customers/:id
+    DELETE /customers/:id
+    GET    /customers/:id/transactions
+
+Features:
+
+- Customer CRUD
+- Tenant isolation
+- Role based access
+- Customer transaction history
+- Optional transaction customer
+- Delete protection
+
+Role Permission:
+
+OWNER:
+- Full CRUD
+- Transaction history
+
+ADMIN:
+- Full CRUD
+- Transaction history
+
+CASHIER:
+- View customer list
+- View customer detail
 
 ------------------------------------------------------------------------
 
@@ -543,6 +630,11 @@ Validation:
 -   Outlet ownership
 -   User ownership
 
+Additional protected resources:
+
+- Customer ownership validation
+- Customer transaction isolation
+
 ## Stock Safety
 
 Protection:
@@ -572,6 +664,8 @@ Completed:
 -   User module
 -   Auth JWT module
 -   Stock module
+-   Customer module
+-   Transaction customer integration
 -   Backend hardening
 
 ------------------------------------------------------------------------
@@ -594,17 +688,19 @@ Completed:
 
 ## Phase 2 - Business Logic
 
-\[ \] Transaction Module
+\[x\] Transaction Module
 
-\[ \] Payment Module
+\[x\] Customer Module
 
-\[ \] Stock deduction after transaction
+\[x\] Reports Module
 
-\[ \] Receipt generation
+\[ \] Receipt / Invoice Generation
 
-\[ \] Daily sales report
+\[ \] Cashier Shift Management
 
 \[ \] Dashboard API
+
+\[ \] Offline Sync
 
 ------------------------------------------------------------------------
 
@@ -735,12 +831,10 @@ Any failure must rollback all changes.
 
 Priority:
 
-1.  Complete Transaction Module
-2.  Implement Payment Module
-3.  Add Transaction Stock Integration
-4.  Add RBAC Permission System
-5.  Move JWT Secret to Environment Variable
-6.  Finalize API Documentation
+1.  Receipt / Invoice Module
+2.  Cashier Shift Management
+3.  Dashboard API
+4.  Android Kotlin POS
 
 ------------------------------------------------------------------------
 

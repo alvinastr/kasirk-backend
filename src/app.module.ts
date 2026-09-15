@@ -12,6 +12,7 @@ import { StockController } from './stock/stock.controller';
 import { StockModule } from './stock/stock.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { ReportsModule } from './reports/reports.module';
+import { CustomersModule } from './customers/customers.module';
 
 @Module({
   imports: [
@@ -36,6 +37,8 @@ import { ReportsModule } from './reports/reports.module';
     TransactionsModule,
 
     ReportsModule,
+
+    CustomersModule,
   ],
   controllers: [
     AppController,

@@ -18,6 +18,22 @@ model categories {
   @@index([tenant_id], map: "idx_categories_tenant_id")
 }
 
+model customers {
+  id           String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id    String         @db.Uuid
+  name         String         @db.VarChar(150)
+  phone        String?        @db.VarChar(30)
+  email        String?        @db.VarChar(255)
+  created_at   DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime       @default(now()) @updatedAt @db.Timestamptz(6)
+  tenants      tenants        @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_customers_tenant")
+  transactions transactions[]
+
+  @@unique([tenant_id, phone], map: "uq_customers_tenant_phone")
+  @@unique([id, tenant_id], map: "uq_customers_id_tenant")
+  @@index([tenant_id], map: "idx_customers_tenant_id")
+}
+
 model outlets {
   id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenant_id         String              @db.Uuid
@@ -146,6 +162,7 @@ model tenants {
   is_active         Boolean             @default(true)
   created_at        DateTime            @default(now()) @db.Timestamptz(6)
   categories        categories[]
+  customers         customers[]
   outlets           outlets[]
   products          products[]
   stock_adjustments stock_adjustments[]
@@ -182,6 +199,7 @@ model transactions {
   tenant_id             String              @db.Uuid
   outlet_id             String              @db.Uuid
   user_id               String              @db.Uuid
+  customer_id           String?             @db.Uuid
   client_transaction_id String              @db.Uuid
   status                String              @default("PENDING") @db.VarChar(20)
   subtotal              BigInt              @default(0)
@@ -192,6 +210,7 @@ model transactions {
   updated_at            DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
   payments              payments[]
   transaction_items     transaction_items[]
+  customers             customers?          @relation(fields: [customer_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transactions_customer_same_tenant")
   outlets               outlets             @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transactions_outlet_same_tenant")
   tenants               tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_transactions_tenant")
   users                 users               @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transactions_user_same_tenant")
@@ -204,6 +223,7 @@ model transactions {
   @@index([user_id], map: "idx_transactions_user_id")
   @@index([tenant_id, created_at], map: "idx_transactions_tenant_created_at")
   @@index([tenant_id, status], map: "idx_transactions_tenant_status")
+  @@index([tenant_id, customer_id, created_at], map: "idx_transactions_tenant_customer_created_at")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
