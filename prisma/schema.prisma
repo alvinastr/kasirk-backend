@@ -32,12 +32,14 @@ model outlets {
   transactions      transactions[]
   users             users[]
 
+  @@unique([id, tenant_id], map: "uq_outlets_id_tenant")
   @@index([tenant_id], map: "idx_outlets_tenant_id")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model payments {
   id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id          String       @db.Uuid
   transaction_id     String       @db.Uuid
   method             String       @db.VarChar(20)
   status             String       @default("PENDING") @db.VarChar(20)
@@ -46,9 +48,12 @@ model payments {
   provider_reference String?      @db.VarChar(255)
   paid_at            DateTime?    @db.Timestamptz(6)
   created_at         DateTime     @default(now()) @db.Timestamptz(6)
-  transactions       transactions @relation(fields: [transaction_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_payments_transaction")
+  transactions       transactions @relation(fields: [transaction_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_payments_transaction_same_tenant")
+  tenants            tenants      @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_payments_tenant")
+  updated_at         DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@index([transaction_id], map: "idx_payments_transaction_id")
+  @@index([tenant_id, status], map: "idx_payments_tenant_status")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -85,6 +90,7 @@ model products {
   transaction_items transaction_items[]
 
   @@unique([tenant_id, sku], map: "uq_products_tenant_sku")
+  @@unique([id, tenant_id], map: "uq_products_id_tenant")
   @@index([category_id], map: "idx_products_category_id")
   @@index([tenant_id], map: "idx_products_tenant_id")
 }
@@ -134,6 +140,8 @@ model tenants {
   id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name              String              @db.VarChar(100)
   address           String?
+  tax_enabled       Boolean             @default(false)
+  tax_included      Boolean             @default(false)
   tax_rate          Decimal             @default(0) @db.Decimal(5, 2)
   is_active         Boolean             @default(true)
   created_at        DateTime            @default(now()) @db.Timestamptz(6)
@@ -144,22 +152,28 @@ model tenants {
   stock_movements   stock_movements[]
   transactions      transactions[]
   users             users[]
+  transaction_items transaction_items[]
+  payments          payments[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model transaction_items {
   id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id      String       @db.Uuid
   transaction_id String       @db.Uuid
   product_id     String       @db.Uuid
   quantity       Int
   unit_price     BigInt
   unit_cost      BigInt
   subtotal       BigInt
-  products       products     @relation(fields: [product_id], references: [id], onUpdate: NoAction, map: "fk_transaction_items_product")
-  transactions   transactions @relation(fields: [transaction_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_transaction_items_transaction")
+  products       products     @relation(fields: [product_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transaction_items_product_same_tenant")
+  transactions   transactions @relation(fields: [transaction_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_transaction_items_transaction_same_tenant")
+  tenants        tenants      @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transaction_items_tenant")
+  created_at     DateTime     @default(now()) @db.Timestamptz(6)
 
   @@index([product_id], map: "idx_transaction_items_product_id")
   @@index([transaction_id], map: "idx_transaction_items_transaction_id")
+  @@index([tenant_id, transaction_id], map: "idx_transaction_items_tenant_transaction")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -175,18 +189,21 @@ model transactions {
   tax                   BigInt              @default(0)
   total                 BigInt              @default(0)
   created_at            DateTime            @default(now()) @db.Timestamptz(6)
-  updated_at            DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
   payments              payments[]
   transaction_items     transaction_items[]
-  outlets               outlets             @relation(fields: [outlet_id], references: [id], onUpdate: NoAction, map: "fk_transactions_outlet")
+  outlets               outlets             @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transactions_outlet_same_tenant")
   tenants               tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_transactions_tenant")
-  users                 users               @relation(fields: [user_id], references: [id], onUpdate: NoAction, map: "fk_transactions_user")
+  users                 users               @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transactions_user_same_tenant")
 
   @@unique([tenant_id, client_transaction_id], map: "uq_transactions_client_id")
+  @@unique([id, tenant_id], map: "uq_transactions_id_tenant")
   @@index([outlet_id, created_at], map: "idx_transactions_outlet_created_at")
   @@index([outlet_id], map: "idx_transactions_outlet_id")
   @@index([tenant_id], map: "idx_transactions_tenant_id")
   @@index([user_id], map: "idx_transactions_user_id")
+  @@index([tenant_id, created_at], map: "idx_transactions_tenant_created_at")
+  @@index([tenant_id, status], map: "idx_transactions_tenant_status")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -207,5 +224,6 @@ model users {
   tenants           tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_users_tenant")
 
   @@unique([tenant_id, email], map: "uq_users_tenant_email")
+  @@unique([id, tenant_id], map: "uq_users_id_tenant")
   @@index([tenant_id], map: "idx_users_tenant_id")
 }

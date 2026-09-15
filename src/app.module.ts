@@ -10,6 +10,7 @@ import { OutletsModule } from './outlets/outlets.module';
 import { UsersModule } from './users/users.module';
 import { StockController } from './stock/stock.controller';
 import { StockModule } from './stock/stock.module';
+import { TransactionsModule } from './transactions/transactions.module';
 
 @Module({
   imports: [
@@ -30,6 +31,8 @@ import { StockModule } from './stock/stock.module';
     UsersModule,
 
     StockModule,
+
+    TransactionsModule,
   ],
   controllers: [
     AppController,

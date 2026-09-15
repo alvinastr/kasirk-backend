@@ -117,15 +117,150 @@ Models:
 -   stock_adjustments
 -   stock_movements
 
-### Transaction
+### Transaction Database Layer
 
-Status: ⏳ Not Implemented
+Status: ✅ Completed
 
-Planned:
+Implemented:
 
--   transactions
+-   Prisma schema
+-   transaction tables
 -   transaction_items
 -   payments
+-   tenant integrity
+-   migration tested
+
+------------------------------------------------------------------------
+
+# Current Database Schema Summary
+
+## Database Relationship Summary
+
+    Tenant
+    |
+    ├── Users
+    |
+    ├── Outlets
+    |
+    ├── Categories
+    |
+    ├── Products
+    |
+    ├── Transactions
+
+    Outlet
+    |
+    ├── Product Stocks
+    |
+    ├── Transactions
+
+    Product
+    |
+    ├── Product Stocks
+    |
+    ├── Transaction Items
+    |
+    ├── Stock Movements
+
+    Transaction
+    |
+    ├── Transaction Items
+    |
+    ├── Payments
+
+------------------------------------------------------------------------
+
+# Transaction Database Fields
+
+## transactions
+
+Fields:
+
+-   id UUID
+-   tenant_id UUID
+-   outlet_id UUID
+-   user_id UUID
+-   client_transaction_id UUID
+-   status
+-   subtotal BIGINT
+-   discount BIGINT
+-   tax BIGINT
+-   total BIGINT
+-   created_at
+-   updated_at
+
+## transaction_items
+
+Fields:
+
+-   id
+-   transaction_id
+-   product_id
+-   quantity
+-   unit_price
+-   unit_cost
+-   subtotal
+
+## payments
+
+Fields:
+
+-   id
+-   transaction_id
+-   method
+-   status
+-   amount
+-   provider
+-   paid_at
+
+------------------------------------------------------------------------
+
+# Completed Modules
+
+### Stock Module ✅
+
+Implemented:
+
+- GET stock by outlet
+- Stock adjustment
+- ADD stock
+- DEDUCT stock
+- Stock validation
+- Negative stock protection
+- Tenant ownership validation
+- Atomic stock update
+
+Verified:
+
+- Create stock success
+- Increase stock success
+- Decrease stock success
+- Insufficient stock rejected
+
+------------------------------------------------------------------------
+
+## Transaction Module Status
+
+Status:
+✅ Completed MVP
+
+Implemented:
+- Transaction checkout
+- Transaction items snapshot
+- CASH payment
+- Change calculation
+- Optional tax configuration
+- Stock deduction after sale
+- Stock movement SALE
+- Idempotency protection
+- Transaction rollback
+
+Verified:
+- Successful checkout
+- Insufficient payment rejection
+- Stock deduction
+- Duplicate request handling
+- Transaction listing
 
 ------------------------------------------------------------------------
 
@@ -297,6 +432,40 @@ Implemented:
 
 ------------------------------------------------------------------------
 
+# API Endpoint Current
+
+## Auth
+
+    POST /auth/login
+    GET /auth/me
+
+## Users
+
+    GET /users
+    POST /users
+
+## Categories
+
+    GET /categories
+    POST /categories
+
+## Products
+
+    GET /products
+    POST /products
+
+## Outlets
+
+    GET /outlets
+    POST /outlets
+
+## Stock
+
+    GET /stock/:outlet_id
+    POST /stock/adjustment
+
+------------------------------------------------------------------------
+
 # Security Hardening Status
 
 Status:
@@ -415,14 +584,119 @@ Dashboard:
 
 ------------------------------------------------------------------------
 
+# Transaction Status Enum
+
+Transaction Status:
+
+-   PENDING
+-   PAID
+-   CANCELLED
+
+Payment Status:
+
+-   PENDING
+-   SUCCESS
+-   FAILED
+
+------------------------------------------------------------------------
+
+# Transaction API
+
+## Create Transaction
+
+    POST /transactions
+
+Request:
+
+``` json
+{
+    "outlet_id": "",
+    "items": [
+        {
+            "product_id": "",
+            "quantity": 2
+        }
+    ],
+    "payment": {
+        "method": "CASH",
+        "amount": 50000
+    }
+}
+```
+
+Response:
+
+``` json
+{
+    "transaction_id": "",
+    "total": 30000,
+    "status": "PAID"
+}
+```
+
+------------------------------------------------------------------------
+
+# Transaction Business Rules
+
+Transaction flow:
+
+1. Cashier creates transaction
+2. System validates outlet ownership
+3. System validates product availability
+4. System calculates subtotal
+5. System creates transaction_items
+6. System decreases stock
+7. System creates stock_movements
+8. System creates payment record
+
+Transaction must support:
+
+-   Multiple products
+-   Quantity calculation
+-   Discount
+-   Tax
+-   Payment status
+-   Receipt data
+
+------------------------------------------------------------------------
+
+# Transaction Implementation Rule
+
+Transaction creation MUST be atomic.
+
+All operations:
+
+-   Transaction creation
+-   Transaction items creation
+-   Stock deduction
+-   Stock movement
+-   Payment creation
+
+must happen inside one Prisma transaction.
+
+Any failure must rollback all changes.
+
+------------------------------------------------------------------------
+
+# Known Issues
+
+-   JWT secret masih hardcoded
+-   RBAC belum implemented
+-   Swagger documentation belum dibuat
+-   Unit test belum lengkap
+
+------------------------------------------------------------------------
+
 # Current Focus
 
 Priority:
 
-1.  Move JWT secret to environment variable
-2.  Implement RBAC authorization
-3.  Finalize API specification
-4.  Start Transaction Module
+1.  Complete Transaction Module
+2.  Implement Payment Module
+3.  Add Transaction Stock Integration
+4.  Add RBAC Permission System
+5.  Move JWT Secret to Environment Variable
+6.  Finalize API Documentation
 
 ------------------------------------------------------------------------
 
@@ -450,6 +724,24 @@ When creating new module:
     ├── service
     ├── dto
     └── module.ts
+
+# Development Rules
+
+Every new module MUST:
+
+-   Use JWT authentication
+-   Validate tenant ownership
+-   Use DTO validation
+-   Use Prisma transaction for multi-table changes
+-   Return clean API response
+-   Handle Prisma errors
+
+Never:
+
+-   Direct Prisma query inside Controller
+-   Hardcode tenant_id
+-   Trust client tenant_id without validation
+-   Return password_hash
 
 Always provide:
 
