@@ -39,11 +39,14 @@ Backend structure:
 
     src
     ├── auth
+    ├── users
+    ├── outlets
     ├── categories
     ├── products
-    ├── outlets
-    ├── users
+    ├── customers
+    ├── transactions
     ├── stock
+    ├── reports
     ├── prisma
     ├── common
     └── app.module.ts
@@ -174,7 +177,13 @@ Implemented:
     |
     ├── Products
     |
+    ├── Customers
+    |
     ├── Transactions
+
+    Customer
+    |
+    └── Transactions
 
     Outlet
     |
@@ -208,6 +217,7 @@ Fields:
 -   tenant_id UUID
 -   outlet_id UUID
 -   user_id UUID
+-   customer_id UUID nullable
 -   client_transaction_id UUID
 -   status
 -   subtotal BIGINT
@@ -308,6 +318,32 @@ Additional Features:
 - Customer validation by tenant
 - Customer included in transaction response
 - Idempotency validation includes customer_id
+
+------------------------------------------------------------------------
+
+## Receipt Module
+
+Status: Completed
+
+Implemented:
+- Receipt read endpoint
+- Transaction receipt detail
+- Customer/payment/item information
+- Tenant isolation
+- RBAC OWNER ADMIN CASHIER
+- Cashier outlet restriction
+
+Endpoint:
+GET /receipts/:transaction_id
+
+Validation:
+- Receipt integration 7/7 passed
+- Build passed
+- Lint passed
+
+Notes:
+- Receipt does not create separate table.
+- Product name/SKU use current product data because transaction item snapshot currently only stores price/cost.
 
 ------------------------------------------------------------------------
 
@@ -595,6 +631,27 @@ Implemented:
     GET /stock/:outlet_id
     POST /stock/adjustment
 
+## Transactions
+
+    POST /transactions
+    GET /transactions
+    GET /transactions/:id
+
+## Customer
+
+    GET /customers
+    POST /customers
+    GET /customers/:id
+    PATCH /customers/:id
+    DELETE /customers/:id
+    GET /customers/:id/transactions
+
+## Reports
+
+    GET /reports/sales/daily
+    GET /reports/sales/summary
+    GET /reports/products/top
+
 ------------------------------------------------------------------------
 
 # Security Hardening Status
@@ -665,6 +722,10 @@ Completed:
 -   Auth JWT module
 -   Stock module
 -   Customer module
+-   Transaction Module
+-   Reports Module
+-   RBAC Authorization
+-   Optional Tax Configuration
 -   Transaction customer integration
 -   Backend hardening
 
@@ -682,7 +743,7 @@ Completed:
 
 \[ \] JWT Secret environment configuration
 
-\[ \] RBAC Permission System
+\[x\] RBAC Permission System
 
 ------------------------------------------------------------------------
 
@@ -728,15 +789,17 @@ Dashboard:
 
 Transaction Status:
 
--   PENDING
--   PAID
+-   COMPLETED
 -   CANCELLED
+-   VOID
+-   PENDING
 
 Payment Status:
 
 -   PENDING
--   SUCCESS
+-   PAID
 -   FAILED
+-   CANCELLED
 
 ------------------------------------------------------------------------
 
@@ -770,7 +833,7 @@ Response:
 {
     "transaction_id": "",
     "total": 30000,
-    "status": "PAID"
+    "status": "COMPLETED"
 }
 ```
 
@@ -821,7 +884,6 @@ Any failure must rollback all changes.
 # Known Issues
 
 -   JWT secret masih hardcoded
--   RBAC belum implemented
 -   Swagger documentation belum dibuat
 -   Unit test belum lengkap
 

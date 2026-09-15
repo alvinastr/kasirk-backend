@@ -13,6 +13,7 @@ import { StockModule } from './stock/stock.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { ReportsModule } from './reports/reports.module';
 import { CustomersModule } from './customers/customers.module';
+import { ReceiptsModule } from './receipts/receipts.module';
 
 @Module({
   imports: [
@@ -39,6 +40,8 @@ import { CustomersModule } from './customers/customers.module';
     ReportsModule,
 
     CustomersModule,
+
+    ReceiptsModule,
   ],
   controllers: [
     AppController,
