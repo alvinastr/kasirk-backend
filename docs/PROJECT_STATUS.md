@@ -264,6 +264,50 @@ Verified:
 
 ------------------------------------------------------------------------
 
+## RBAC Authorization Module
+
+Status:
+
+✅ Completed
+
+Implemented:
+
+- Roles decorator
+- RolesGuard
+- Role-based endpoint protection
+- ForbiddenException handling
+
+Roles:
+
+- OWNER
+- ADMIN
+- CASHIER
+
+Protected Endpoints:
+
+| Endpoint | Allowed Role |
+| --- | --- |
+| POST /users | OWNER |
+| POST /outlets | OWNER |
+| POST /products | OWNER, ADMIN |
+| POST /categories | OWNER, ADMIN |
+| POST /stock/adjustment | OWNER, ADMIN |
+| POST /transactions | OWNER, ADMIN, CASHIER |
+
+Verification:
+
+- RBAC integration test: 9/9 passed
+- Build passed
+- TypeScript passed
+- Lint passed
+
+Notes:
+
+GET endpoints still follow existing access rules.
+JWT authentication and tenant isolation unchanged.
+
+------------------------------------------------------------------------
+
 # Authentication Status
 
 Status:

@@ -16,14 +16,17 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { QueryTransactionsDto } from './dto/query-transactions.dto';
 import { TransactionsService } from './transactions.service';
+import { Roles } from '../common/decorators/roles.decorator';
+import { RolesGuard } from '../common/guards/roles.guard';
 
 @Controller('transactions')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, RolesGuard)
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true, forbidNonWhitelisted: true }))
 export class TransactionsController {
     constructor(private readonly transactionsService: TransactionsService) {}
 
     @Post()
+    @Roles('OWNER', 'ADMIN', 'CASHIER')
     create(@CurrentUser() user: JwtPayload, @Body() dto: CreateTransactionDto) {
         return this.transactionsService.create(user, dto);
     }

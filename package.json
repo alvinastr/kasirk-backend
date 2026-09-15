@@ -19,6 +19,7 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:hardening": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --require ts-node/register/transpile-only --test test/hardening.integration.ts",
+    "test:rbac": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --require ts-node/register/transpile-only --test test/rbac.integration.cjs",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "postinstall": "prisma skills sync || exit 0"
   },

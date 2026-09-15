@@ -5,9 +5,11 @@ import { CategoriesService } from './categories.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import type { JwtPayload } from '../auth/types/jwt-payload.type';
 import { CreateCategoryDto } from './dto/create-category.dto';
+import { Roles } from '../common/decorators/roles.decorator';
+import { RolesGuard } from '../common/guards/roles.guard';
 
 @Controller('categories')
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, RolesGuard)
 export class CategoriesController {
 
     constructor(
@@ -22,6 +24,7 @@ export class CategoriesController {
     }
 
     @Post()
+    @Roles('OWNER', 'ADMIN')
     create(
         @CurrentUser() user: JwtPayload,
         @Body() dto: CreateCategoryDto

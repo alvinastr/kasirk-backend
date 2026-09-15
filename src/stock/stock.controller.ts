@@ -18,12 +18,14 @@ import type { JwtPayload } from '../auth/types/jwt-payload.type';
 import { StockService } from './stock.service';
 
 import { CreateStockAdjustmentDto } from './dto/create-stock-adjustment.dto';
+import { Roles } from '../common/decorators/roles.decorator';
+import { RolesGuard } from '../common/guards/roles.guard';
 
 
 
 @Controller('stock')
 
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, RolesGuard)
 
 export class StockController {
 
@@ -56,6 +58,8 @@ export class StockController {
 
 
     @Post('adjustment')
+
+    @Roles('OWNER', 'ADMIN')
 
     createAdjustment(
 
