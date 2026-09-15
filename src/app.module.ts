@@ -14,6 +14,7 @@ import { TransactionsModule } from './transactions/transactions.module';
 import { ReportsModule } from './reports/reports.module';
 import { CustomersModule } from './customers/customers.module';
 import { ReceiptsModule } from './receipts/receipts.module';
+import { ShiftsModule } from './shifts/shifts.module';
 
 @Module({
   imports: [
@@ -42,6 +43,8 @@ import { ReceiptsModule } from './receipts/receipts.module';
     CustomersModule,
 
     ReceiptsModule,
+
+    ShiftsModule,
   ],
   controllers: [
     AppController,

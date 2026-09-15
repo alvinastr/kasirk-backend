@@ -23,6 +23,7 @@
     "test:reports": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --require ts-node/register/transpile-only --test test/reports.integration.cjs",
     "test:customers": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/customers.integration.cjs",
     "test:receipts": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/receipts.integration.cjs",
+    "test:shifts": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/shifts.integration.cjs",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "postinstall": "prisma skills sync || exit 0"
   },

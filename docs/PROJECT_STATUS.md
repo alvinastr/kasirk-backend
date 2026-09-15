@@ -387,6 +387,32 @@ CASHIER:
 
 ------------------------------------------------------------------------
 
+## Shift Module
+
+Status:
+✅ Completed
+
+Features:
+
+- Open cashier shift
+- Current active shift
+- Close cashier shift
+- Cash reconciliation
+- Expected cash calculation
+- Tenant isolation
+- Role based access
+- One OPEN shift per user protection
+
+Endpoints:
+
+POST /shifts/open
+
+GET /shifts/current
+
+POST /shifts/:id/close
+
+------------------------------------------------------------------------
+
 ## RBAC Authorization Module
 
 Status:
@@ -722,6 +748,7 @@ Completed:
 -   Auth JWT module
 -   Stock module
 -   Customer module
+-   Shift module
 -   Transaction Module
 -   Reports Module
 -   RBAC Authorization

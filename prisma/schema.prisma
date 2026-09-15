@@ -34,6 +34,29 @@ model customers {
   @@index([tenant_id], map: "idx_customers_tenant_id")
 }
 
+/// This table contains check constraints and a partial unique index that Prisma cannot represent directly.
+model cashier_sessions {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id     String    @db.Uuid
+  outlet_id     String    @db.Uuid
+  user_id       String    @db.Uuid
+  opening_cash  BigInt
+  closing_cash  BigInt?
+  expected_cash BigInt?
+  difference    BigInt?
+  status        String    @default("OPEN") @db.VarChar(20)
+  opened_at     DateTime  @default(now()) @db.Timestamptz(6)
+  closed_at     DateTime? @db.Timestamptz(6)
+  outlets       outlets   @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_outlet_same_tenant")
+  tenants       tenants   @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_tenant")
+  users         users     @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_user_same_tenant")
+
+  @@unique([id, tenant_id], map: "uq_cashier_sessions_id_tenant")
+  @@index([tenant_id], map: "idx_cashier_sessions_tenant_id")
+  @@index([tenant_id, user_id, status], map: "idx_cashier_sessions_tenant_user_status")
+  @@index([tenant_id, outlet_id, opened_at], map: "idx_cashier_sessions_tenant_outlet_opened_at")
+}
+
 model outlets {
   id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenant_id         String              @db.Uuid
@@ -47,6 +70,7 @@ model outlets {
   stock_movements   stock_movements[]
   transactions      transactions[]
   users             users[]
+  cashier_sessions  cashier_sessions[]
 
   @@unique([id, tenant_id], map: "uq_outlets_id_tenant")
   @@index([tenant_id], map: "idx_outlets_tenant_id")
@@ -171,6 +195,7 @@ model tenants {
   users             users[]
   transaction_items transaction_items[]
   payments          payments[]
+  cashier_sessions  cashier_sessions[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -240,6 +265,7 @@ model users {
   stock_adjustments stock_adjustments[]
   stock_movements   stock_movements[]
   transactions      transactions[]
+  cashier_sessions  cashier_sessions[]
   outlets           outlets?            @relation(fields: [outlet_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_users_outlet")
   tenants           tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_users_tenant")
 
