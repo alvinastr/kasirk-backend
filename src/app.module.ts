@@ -15,6 +15,7 @@ import { ReportsModule } from './reports/reports.module';
 import { CustomersModule } from './customers/customers.module';
 import { ReceiptsModule } from './receipts/receipts.module';
 import { ShiftsModule } from './shifts/shifts.module';
+import { SyncModule } from './sync/sync.module';
 
 @Module({
   imports: [
@@ -45,6 +46,8 @@ import { ShiftsModule } from './shifts/shifts.module';
     ReceiptsModule,
 
     ShiftsModule,
+
+    SyncModule,
   ],
   controllers: [
     AppController,

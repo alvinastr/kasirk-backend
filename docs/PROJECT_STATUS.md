@@ -413,6 +413,29 @@ POST /shifts/:id/close
 
 ------------------------------------------------------------------------
 
+## Offline Transaction Sync MVP
+
+Status: Completed
+
+Features:
+- Batch transaction synchronization
+- client_transaction_id idempotency
+- Reuse TransactionsService checkout flow
+- Partial sync failure handling
+- Cashier shift validation
+- Tenant isolation
+- Stock validation
+
+Endpoint:
+POST /sync/transactions
+
+Testing:
+- Sync integration: 7/7 passed
+- Build passed
+- Lint passed
+
+------------------------------------------------------------------------
+
 ## RBAC Authorization Module
 
 Status:
@@ -788,7 +811,7 @@ Completed:
 
 \[ \] Dashboard API
 
-\[ \] Offline Sync
+\[x\] Offline Sync
 
 ------------------------------------------------------------------------
 
