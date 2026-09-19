@@ -229,7 +229,7 @@ export class TransactionsService {
         }
         const products = await tx.products.findMany({
             where: { tenant_id: user.tenant_id, is_active: true, id: { in: dto.items.map((item) => item.product_id) } },
-            select: { id: true, price: true, cost: true },
+            select: { id: true, price: true, cost: true, track_stock: true },
         });
         if (products.length !== dto.items.length) throw new NotFoundException('Product not found');
         const productMap = new Map(products.map((product) => [product.id, product]));
@@ -242,6 +242,7 @@ export class TransactionsService {
                 unit_price: BigInt(product.price),
                 unit_cost: BigInt(product.cost),
                 subtotal: BigInt(product.price) * BigInt(item.quantity),
+                track_stock: product.track_stock,
             };
         });
         const subtotal = items.reduce((sum, item) => sum + item.subtotal, 0n);
@@ -274,12 +275,21 @@ export class TransactionsService {
             select: { id: true },
         });
         await tx.transaction_items.createMany({
-            data: items.map((item) => ({ ...item, transaction_id: transaction.id })),
+            data: items.map((item) => ({
+                tenant_id: item.tenant_id,
+                transaction_id: transaction.id,
+                product_id: item.product_id,
+                quantity: item.quantity,
+                unit_price: item.unit_price,
+                unit_cost: item.unit_cost,
+                subtotal: item.subtotal,
+            })),
         });
 
         // Stable product order limits deadlocks. Availability and decrement are
         // one SQL update; no separate read-then-write race or nested transaction.
-        for (const item of items) {
+        const trackedItems = items.filter((item) => item.track_stock);
+        for (const item of trackedItems) {
             const updated = await tx.product_stocks.updateMany({
                 where: {
                     outlet_id: dto.outlet_id,
@@ -294,18 +304,20 @@ export class TransactionsService {
                 throw new ConflictException({ message: 'Insufficient stock', error_code: 'INSUFFICIENT_STOCK', product_id: item.product_id });
             }
         }
-        await tx.stock_movements.createMany({
-            data: items.map((item) => ({
-                tenant_id: user.tenant_id,
-                outlet_id: dto.outlet_id,
-                product_id: item.product_id,
-                user_id: user.sub,
-                type: 'SALE',
-                quantity: -item.quantity,
-                reference_type: 'TRANSACTION',
-                reference_id: transaction.id,
-            })),
-        });
+        if (trackedItems.length > 0) {
+            await tx.stock_movements.createMany({
+                data: trackedItems.map((item) => ({
+                    tenant_id: user.tenant_id,
+                    outlet_id: dto.outlet_id,
+                    product_id: item.product_id,
+                    user_id: user.sub,
+                    type: 'SALE',
+                    quantity: -item.quantity,
+                    reference_type: 'TRANSACTION',
+                    reference_id: transaction.id,
+                })),
+            });
+        }
         await tx.payments.create({
             data: {
                 tenant_id: user.tenant_id,

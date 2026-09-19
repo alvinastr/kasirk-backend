@@ -38,10 +38,17 @@ export class StockService {
 
             const product = await tx.products.findFirst({
                 where: { id: dto.product_id, tenant_id: user.tenant_id },
-                select: { id: true },
+                select: { id: true, track_stock: true },
             });
             if (!product) {
                 throw new NotFoundException('Product not found');
+            }
+            if (!product.track_stock) {
+                throw new ConflictException({
+                    message: 'Stock tracking is disabled for this product',
+                    error_code: 'STOCK_TRACKING_DISABLED',
+                    product_id: product.id,
+                });
             }
 
             const actor = await tx.users.findFirst({

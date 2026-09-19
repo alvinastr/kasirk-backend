@@ -9,6 +9,7 @@ const { Client } = require('pg');
 const url = process.env.MIGRATION_TEST_DATABASE_URL;
 const baseline = readFileSync(join(__dirname, '../migrations/20260914000000_baseline/migration.sql'), 'utf8');
 const migration = readFileSync(join(__dirname, '../migrations/20260914000100_transaction_tenant_integrity/migration.sql'), 'utf8');
+const trackStockMigration = readFileSync(join(__dirname, '../migrations/20260918000000_add_product_track_stock/migration.sql'), 'utf8');
 
 async function withSchema(run) {
     const schema = `migration_${randomUUID().replaceAll('-', '')}`;
@@ -47,6 +48,16 @@ async function rejected(db, sql, args, code) {
 }
 
 test('transaction database migrations', { skip: !url }, async (t) => {
+    await t.test('track_stock migration preserves existing products with tracking enabled', () => withSchema(async (db) => {
+        const ids = await seed(db);
+        await db.query(trackStockMigration);
+        const existing = await db.query('SELECT track_stock FROM products WHERE id IN ($1, $2) ORDER BY id', [ids.product, ids.otherProduct]);
+        assert.deepEqual(existing.rows.map((row) => row.track_stock), [true, true]);
+        const newProduct = randomUUID();
+        await db.query("INSERT INTO products(id,tenant_id,name,sku) VALUES($1,$2,'New','NEW')", [newProduct, ids.a]);
+        assert.equal((await db.query('SELECT track_stock FROM products WHERE id=$1', [newProduct])).rows[0].track_stock, true);
+    }));
+
     await t.test('optional tax migration preserves existing rate and disables tax by default', () => withSchema(async (db) => {
         const x = await seed(db);
         await db.query('UPDATE tenants SET tax_rate=11 WHERE id=$1', [x.a]);

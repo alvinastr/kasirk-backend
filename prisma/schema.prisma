@@ -120,6 +120,7 @@ model products {
   price             Int                 @default(0)
   cost              Int                 @default(0)
   minimum_stock     Int                 @default(0)
+  track_stock       Boolean             @default(true)
   is_active         Boolean             @default(true)
   created_at        DateTime            @default(now()) @db.Timestamptz(6)
   product_stocks    product_stocks[]

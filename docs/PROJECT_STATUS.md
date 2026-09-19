@@ -575,6 +575,68 @@ Endpoints:
 
     GET /products
     POST /products
+    PATCH /products/:id
+
+### Optional Stock Tracking
+
+Status: ✅ Implemented and feature-tested
+
+Product field:
+
+```text
+track_stock BOOLEAN NOT NULL DEFAULT true
+```
+
+Behavior:
+
+- Existing and newly created products default to `track_stock = true`.
+- Tracked products preserve stock availability validation, atomic decrement,
+  `INSUFFICIENT_STOCK`, and `SALE` stock movements.
+- Untracked products do not require a stock balance, do not decrement
+  `product_stocks`, and do not create `SALE` stock movements.
+- Mixed carts create transaction items for every product while mutating stock
+  only for tracked products.
+- Insufficient stock on any tracked item rolls back the complete transaction.
+- Online checkout and `POST /sync/transactions` share the same rule through
+  `TransactionsService.create()`.
+- Replaying an offline `client_transaction_id` remains idempotent and does not
+  decrement tracked stock twice.
+- Manual adjustment of an untracked product returns `409 Conflict` with
+  `STOCK_TRACKING_DISABLED`.
+- `POST /products`, `GET /products`, and `PATCH /products/:id` expose
+  `track_stock`; create defaults to `true` when omitted.
+
+Migration:
+
+```text
+20260918000000_add_product_track_stock
+```
+
+Tests added:
+
+- Product API default/read/update behavior.
+- Tracked, untracked, and mixed-cart checkout behavior.
+- Atomic rollback when a tracked mixed-cart item is insufficient.
+- Offline sync with zero-stock untracked products and idempotent replay.
+- Rejection of manual stock adjustment for untracked products.
+- Migration preservation of existing products with `track_stock = true`.
+
+Verification executed on 2026-09-18:
+
+- `npx prisma validate`: passed.
+- `npx prisma generate`: passed.
+- `npx prisma migrate deploy`: migration applied without reset.
+- `npx prisma migrate status`: database schema is up to date.
+- `npm run build`: passed.
+- `npm run lint`: passed with two pre-existing unused-import warnings.
+- `npm run test:optional-stock`: 9/9 passed.
+- Transaction integration: 16/16 passed.
+- Offline sync integration: 7/7 passed.
+- Hardening integration: 13/13 passed.
+- Migration integration: 12/12 passed.
+- RBAC integration: 9/9 passed.
+- Full `npm test -- --runInBand`: did not execute tests because the existing
+  Jest/TypeScript 6 configuration raises `TS5011` for all 13 suites.
 
 ------------------------------------------------------------------------
 
