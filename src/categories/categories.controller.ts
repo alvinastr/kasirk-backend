@@ -11,26 +11,16 @@ import { RolesGuard } from '../common/guards/roles.guard';
 @Controller('categories')
 @UseGuards(JwtGuard, RolesGuard)
 export class CategoriesController {
+  constructor(private readonly categoriesService: CategoriesService) {}
 
-    constructor(
-        private categoriesService: CategoriesService
-    ){}
+  @Get()
+  findAll(@CurrentUser() user: JwtPayload) {
+    return this.categoriesService.findAll(user);
+  }
 
-    @Get()
-    findAll(
-        @CurrentUser() user: JwtPayload
-    ){
-        return this.categoriesService.findAll(user);
-    }
-
-    @Post()
-    @Roles('OWNER', 'ADMIN')
-    create(
-        @CurrentUser() user: JwtPayload,
-        @Body() dto: CreateCategoryDto
-    ){
-        console.log(dto);
-        return this.categoriesService.create(user, dto);
-    }
-    
+  @Post()
+  @Roles('OWNER', 'ADMIN')
+  create(@CurrentUser() user: JwtPayload, @Body() dto: CreateCategoryDto) {
+    return this.categoriesService.create(user, dto);
+  }
 }

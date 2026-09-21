@@ -27,6 +27,7 @@ const { UsersService } = require('../src/users/users.service');
 test('RBAC protects existing endpoints', async (t) => {
     const createResponse = (resource) => ({
         create: (user) => ({ resource, role: user.role }),
+        update: (user) => ({ resource, role: user.role }),
         findAll: (user) => ({ resource, role: user.role }),
         findByOutlet: (user) => ({ resource, role: user.role }),
         createAdjustment: (user) => ({ resource, role: user.role }),
@@ -110,6 +111,15 @@ test('RBAC protects existing endpoints', async (t) => {
 
         await t.test('CASHIER cannot adjust stock', async () => {
             await post('/stock/adjustment', cashier, protectedPosts[4][1]).expect(403);
+        });
+
+        await t.test('CASHIER cannot mutate products or categories', async () => {
+            await post('/products', cashier, protectedPosts[2][1]).expect(403);
+            await post('/categories', cashier, protectedPosts[3][1]).expect(403);
+            await http.patch(`/products/${productId}`)
+                .set('Authorization', `Bearer ${cashier}`)
+                .send({ name: 'Forbidden update' })
+                .expect(403);
         });
 
         await t.test('CASHIER can create transactions', async () => {

@@ -638,6 +638,75 @@ Verification executed on 2026-09-18:
 - Full `npm test -- --runInBand`: did not execute tests because the existing
   Jest/TypeScript 6 configuration raises `TS5011` for all 13 suites.
 
+### Product and Category API Contract for Android Product Management
+
+Status: Backend API hardened. Android Product Management UI is not implemented.
+
+Product endpoints and RBAC:
+
+| Endpoint | OWNER | ADMIN | CASHIER |
+| --- | --- | --- | --- |
+| `GET /products` | Allowed | Allowed | Allowed |
+| `POST /products` | Allowed | Allowed | Forbidden |
+| `PATCH /products/:id` | Allowed | Allowed | Forbidden |
+
+`GET /products` returns active products belonging to the JWT tenant. Product
+responses include `track_stock`. Product create requires `name`, `sku`, `price`,
+`cost`, and `minimum_stock`. `category_id` is optional and nullable;
+`track_stock` is optional and defaults to `true`. Product PATCH accepts the same
+fields as optional values and requires at least one supported field. `is_active`
+exists in the database but is not currently exposed as a writable API field.
+
+Product validation:
+
+- `name` must be a nonblank string of at most 150 characters.
+- `sku` must be a nonblank string of at most 100 characters.
+- `price`, `cost`, and `minimum_stock` must be nonnegative PostgreSQL integers.
+- `category_id`, when non-null, must be a UUID belonging to the JWT tenant.
+- `track_stock` must be a Boolean.
+
+Product business errors:
+
+- Duplicate `(tenant_id, sku)` returns `409 Conflict` with
+  `SKU_ALREADY_EXISTS`. The database constraint remains the source of truth.
+- Missing and cross-tenant products return the same `404 Not Found` response
+  with `PRODUCT_NOT_FOUND`.
+- Missing and cross-tenant categories used during product create/update return
+  `404 Not Found` with `CATEGORY_NOT_FOUND`.
+- The same SKU remains valid in different tenants.
+
+Category endpoints and RBAC:
+
+| Endpoint | OWNER | ADMIN | CASHIER |
+| --- | --- | --- | --- |
+| `GET /categories` | Allowed | Allowed | Allowed |
+| `POST /categories` | Allowed | Allowed | Forbidden |
+
+Category list and create operations use `tenant_id` from the JWT. Category name
+must be a nonblank string of at most 100 characters. Duplicate
+`(tenant_id, name)` returns `409 Conflict` with
+`CATEGORY_NAME_ALREADY_EXISTS`; the same name remains valid in another tenant.
+
+Optional stock behavior is unchanged: tracked products use normal validation
+and decrement, untracked products skip sale stock mutation, and manual stock
+adjustment for an untracked product returns `STOCK_TRACKING_DISABLED`.
+
+Focused integration coverage includes Product/Category OWNER, ADMIN, and
+CASHIER RBAC; tenant-scoped duplicate constraints; DTO validation; category
+ownership; product PATCH ownership; stable business errors; and writable
+`track_stock=false` behavior.
+
+Verification executed on 2026-09-19:
+
+- Product/Category integration: 10/10 passed.
+- Optional-stock integration: 9/9 passed.
+- Phase 1 hardening integration: 13/13 passed.
+- RBAC integration: 10/10 passed.
+- `npm run build`: passed.
+- `npm run lint`: passed with two pre-existing unused-import warnings.
+- Full `npm test -- --runInBand`: still blocked before test execution by the
+  existing Jest/TypeScript 6 `TS5011` rootDir issue.
+
 ------------------------------------------------------------------------
 
 ## Outlet Module
@@ -731,6 +800,7 @@ Implemented:
 
     GET /products
     POST /products
+    PATCH /products/:id
 
 ## Outlets
 

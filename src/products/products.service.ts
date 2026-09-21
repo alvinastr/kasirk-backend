@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import type { JwtPayload } from '../auth/types/jwt-payload.type';
+import { isUniqueConstraintViolation } from '../common/utils/prisma-error.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -24,18 +26,22 @@ export class ProductsService {
   async create(user: JwtPayload, dto: CreateProductDto) {
     await this.validateCategory(user.tenant_id, dto.category_id);
 
-    return this.prisma.products.create({
-      data: {
-        tenant_id: user.tenant_id,
-        name: dto.name,
-        sku: dto.sku,
-        price: dto.price,
-        cost: dto.cost,
-        minimum_stock: dto.minimum_stock,
-        category_id: dto.category_id ?? null,
-        track_stock: dto.track_stock ?? true,
-      },
-    });
+    try {
+      return await this.prisma.products.create({
+        data: {
+          tenant_id: user.tenant_id,
+          name: dto.name,
+          sku: dto.sku,
+          price: dto.price,
+          cost: dto.cost,
+          minimum_stock: dto.minimum_stock,
+          category_id: dto.category_id ?? null,
+          track_stock: dto.track_stock ?? true,
+        },
+      });
+    } catch (error) {
+      this.rethrowProductWriteError(error);
+    }
   }
 
   async update(user: JwtPayload, id: string, dto: UpdateProductDto) {
@@ -44,7 +50,10 @@ export class ProductsService {
       select: { id: true },
     });
     if (!product) {
-      throw new NotFoundException('Product not found');
+      throw new NotFoundException({
+        error_code: 'PRODUCT_NOT_FOUND',
+        message: 'Product not found',
+      });
     }
     if (dto.category_id !== undefined) {
       await this.validateCategory(user.tenant_id, dto.category_id);
@@ -69,10 +78,14 @@ export class ProductsService {
       throw new BadRequestException('At least one product field is required');
     }
 
-    return this.prisma.products.update({
-      where: { id_tenant_id: { id, tenant_id: user.tenant_id } },
-      data,
-    });
+    try {
+      return await this.prisma.products.update({
+        where: { id_tenant_id: { id, tenant_id: user.tenant_id } },
+        data,
+      });
+    } catch (error) {
+      this.rethrowProductWriteError(error);
+    }
   }
 
   private async validateCategory(
@@ -87,7 +100,25 @@ export class ProductsService {
       select: { id: true },
     });
     if (!category) {
-      throw new NotFoundException('Category not found');
+      throw new NotFoundException({
+        error_code: 'CATEGORY_NOT_FOUND',
+        message: 'Category not found',
+      });
     }
+  }
+
+  private rethrowProductWriteError(error: unknown): never {
+    if (
+      isUniqueConstraintViolation(error, 'uq_products_tenant_sku', [
+        'tenant_id',
+        'sku',
+      ])
+    ) {
+      throw new ConflictException({
+        error_code: 'SKU_ALREADY_EXISTS',
+        message: 'Product SKU already exists',
+      });
+    }
+    throw error;
   }
 }
