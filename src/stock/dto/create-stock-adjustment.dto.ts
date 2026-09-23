@@ -1,4 +1,12 @@
-import { IsIn, IsInt, IsString, IsUUID, Matches, Min } from 'class-validator';
+import {
+    IsIn,
+    IsInt,
+    IsOptional,
+    IsString,
+    IsUUID,
+    Matches,
+    Min,
+} from 'class-validator';
 
 export class CreateStockAdjustmentDto {
     @IsUUID()
@@ -14,7 +22,8 @@ export class CreateStockAdjustmentDto {
     @Min(1)
     quantity: number;
 
+    @IsOptional()
     @IsString()
     @Matches(/\S/, { message: 'reason must not be blank' })
-    reason: string;
+    reason?: string | null;
 }

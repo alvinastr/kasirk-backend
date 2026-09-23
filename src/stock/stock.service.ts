@@ -3,6 +3,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { JwtPayload } from '../auth/types/jwt-payload.type';
 import { CreateStockAdjustmentDto } from './dto/create-stock-adjustment.dto';
 
+const DEFAULT_STOCK_ADJUSTMENT_REASON = 'Manual stock adjustment';
+
 @Injectable()
 export class StockService {
     constructor(private prisma: PrismaService) {}
@@ -28,6 +30,7 @@ export class StockService {
 
     async createAdjustment(user: JwtPayload, dto: CreateStockAdjustmentDto) {
         return this.prisma.$transaction(async (tx) => {
+            const reason = dto.reason ?? DEFAULT_STOCK_ADJUSTMENT_REASON;
             const outlet = await tx.outlets.findFirst({
                 where: { id: dto.outlet_id, tenant_id: user.tenant_id },
                 select: { id: true },
@@ -99,7 +102,7 @@ export class StockService {
                     user_id: user.sub,
                     type: dto.adjustment_type,
                     quantity: dto.quantity,
-                    reason: dto.reason,
+                    reason,
                 },
             });
 
@@ -113,7 +116,7 @@ export class StockService {
                     quantity: delta,
                     reference_type: 'STOCK_ADJUSTMENT',
                     reference_id: adjustment.id,
-                    reason: dto.reason,
+                    reason,
                 },
             });
 

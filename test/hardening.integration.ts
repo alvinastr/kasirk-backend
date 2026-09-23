@@ -60,13 +60,20 @@ test('Phase 1 hardening against PostgreSQL', { skip: !process.env.HARDENING_DATA
             assert.throws(() => new JwtStrategy().validate({ ...user, sub: '' }));
         });
 
-        await t.test('DTO rejects invalid types, quantities and blank reasons', async () => {
+        await t.test('DTO accepts provided, omitted and null reasons while rejecting blank reasons', async () => {
             for (const patch of [{ quantity: 0 }, { quantity: -1 }, { quantity: 1.5 },
                 { adjustment_type: 'INVALID' }, { reason: '   ' }, { outlet_id: 'bad-id' }]) {
                 const dto = Object.assign(new CreateStockAdjustmentDto(), adjustment(foreignProduct.id, 'ADD', 1), patch);
                 assert.ok((await validate(dto)).length > 0);
             }
-            assert.equal((await validate(Object.assign(new CreateStockAdjustmentDto(), adjustment(foreignProduct.id, 'ADD', 1)))).length, 0);
+            const provided = adjustment(foreignProduct.id, 'ADD', 1);
+            const omitted = {
+                outlet_id: provided.outlet_id, product_id: provided.product_id,
+                adjustment_type: provided.adjustment_type, quantity: provided.quantity,
+            };
+            assert.equal((await validate(Object.assign(new CreateStockAdjustmentDto(), provided))).length, 0);
+            assert.equal((await validate(Object.assign(new CreateStockAdjustmentDto(), omitted))).length, 0);
+            assert.equal((await validate(Object.assign(new CreateStockAdjustmentDto(), { ...omitted, reason: null }))).length, 0);
         });
 
         await t.test('foreign outlet, product and actor cannot adjust stock', async () => {
@@ -88,6 +95,8 @@ test('Phase 1 hardening against PostgreSQL', { skip: !process.env.HARDENING_DATA
             const product = await makeProduct();
             assert.equal((await stock.createAdjustment(user, adjustment(product.id, 'ADD', 10))).stock, 10);
             assert.equal((await stock.createAdjustment(user, adjustment(product.id, 'DEDUCT', 3))).stock, 7);
+            const adjustments = await db!.stock_adjustments.findMany({ where: { product_id: product.id } });
+            assert.ok(adjustments.every((row) => row.reason === 'Test adjustment'));
             const movements = await db!.stock_movements.findMany({ where: { product_id: product.id }, orderBy: { created_at: 'asc' } });
             assert.deepEqual(movements.map((m) => m.quantity), [10, -3]);
             for (const movement of movements) {
@@ -96,6 +105,33 @@ test('Phase 1 hardening against PostgreSQL', { skip: !process.env.HARDENING_DATA
                 assert.equal(movement.reference_type, 'STOCK_ADJUSTMENT');
                 assert.ok(await db!.stock_adjustments.findUnique({ where: { id: movement.reference_id! } }));
             }
+        });
+
+        await t.test('omitted and null reasons use an audit fallback without changing ADD or DEDUCT', async () => {
+            const product = await makeProduct();
+            const add = adjustment(product.id, 'ADD', 5);
+            const withoutReason = {
+                outlet_id: add.outlet_id, product_id: add.product_id,
+                adjustment_type: add.adjustment_type, quantity: add.quantity,
+            };
+            assert.equal((await stock.createAdjustment(user, withoutReason)).stock, 5);
+            assert.equal((await stock.createAdjustment(user, {
+                ...adjustment(product.id, 'DEDUCT', 2), reason: null,
+            })).stock, 3);
+
+            const adjustments = await db!.stock_adjustments.findMany({
+                where: { product_id: product.id }, orderBy: { created_at: 'asc' },
+            });
+            const movements = await db!.stock_movements.findMany({
+                where: { product_id: product.id }, orderBy: { created_at: 'asc' },
+            });
+            assert.deepEqual(adjustments.map((row) => row.reason), [
+                'Manual stock adjustment', 'Manual stock adjustment',
+            ]);
+            assert.deepEqual(movements.map((row) => row.reason), [
+                'Manual stock adjustment', 'Manual stock adjustment',
+            ]);
+            assert.deepEqual(movements.map((row) => row.quantity), [5, -2]);
         });
 
         await t.test('DEDUCT on missing stock does not create stock or audit', async () => {
