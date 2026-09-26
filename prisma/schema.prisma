@@ -57,6 +57,50 @@ model cashier_sessions {
   @@index([tenant_id, outlet_id, opened_at], map: "idx_cashier_sessions_tenant_outlet_opened_at")
 }
 
+/// Authentication sessions are separate from operational cashier shifts.
+/// This table contains a status check constraint that Prisma cannot represent directly.
+model device_sessions {
+  id                 String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id          String            @db.Uuid
+  user_id            String            @db.Uuid
+  device_id          String            @db.Uuid
+  device_name        String?           @db.VarChar(100)
+  refresh_token_hash String            @unique(map: "uq_device_sessions_refresh_token_hash")
+  status             String            @default("ACTIVE") @db.VarChar(20)
+  created_at         DateTime          @default(now()) @db.Timestamptz(6)
+  last_used_at       DateTime          @default(now()) @db.Timestamptz(6)
+  expires_at         DateTime          @db.Timestamptz(6)
+  rotated_at         DateTime?         @db.Timestamptz(6)
+  revoked_at         DateTime?         @db.Timestamptz(6)
+  tenants            tenants           @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_device_sessions_tenant")
+  users              users             @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_device_sessions_user_same_tenant")
+  auth_audit_logs    auth_audit_logs[]
+
+  @@unique([id, tenant_id], map: "uq_device_sessions_id_tenant")
+  @@index([tenant_id, user_id, status], map: "idx_device_sessions_tenant_user_status")
+  @@index([tenant_id, user_id, device_id], map: "idx_device_sessions_tenant_user_device")
+  @@index([expires_at], map: "idx_device_sessions_expires_at")
+}
+
+model auth_audit_logs {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id       String           @db.Uuid
+  user_id         String?          @db.Uuid
+  session_id      String?          @db.Uuid
+  event           String           @db.VarChar(100)
+  result          String           @db.VarChar(30)
+  metadata        Json?            @db.JsonB
+  created_at      DateTime         @default(now()) @db.Timestamptz(6)
+  tenants         tenants          @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_auth_audit_logs_tenant")
+  users           users?           @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_auth_audit_logs_user_same_tenant")
+  device_sessions device_sessions? @relation(fields: [session_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_auth_audit_logs_session_same_tenant")
+
+  @@index([tenant_id, created_at], map: "idx_auth_audit_logs_tenant_created_at")
+  @@index([tenant_id, user_id, created_at], map: "idx_auth_audit_logs_tenant_user_created_at")
+  @@index([tenant_id, session_id], map: "idx_auth_audit_logs_tenant_session")
+  @@index([tenant_id, event, created_at], map: "idx_auth_audit_logs_tenant_event_created_at")
+}
+
 model outlets {
   id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenant_id         String              @db.Uuid
@@ -179,6 +223,7 @@ model stock_movements {
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model tenants {
   id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  store_code        String?             @unique(map: "uq_tenants_store_code") @db.VarChar(32)
   name              String              @db.VarChar(100)
   address           String?
   tax_enabled       Boolean             @default(false)
@@ -197,6 +242,8 @@ model tenants {
   transaction_items transaction_items[]
   payments          payments[]
   cashier_sessions  cashier_sessions[]
+  device_sessions   device_sessions[]
+  auth_audit_logs   auth_audit_logs[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -254,23 +301,32 @@ model transactions {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model users {
-  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id         String              @db.Uuid
-  outlet_id         String?             @db.Uuid
-  name              String              @db.VarChar(100)
-  email             String              @db.VarChar(255)
-  password_hash     String
-  role              String              @db.VarChar(20)
-  is_active         Boolean             @default(true)
-  created_at        DateTime            @default(now()) @db.Timestamptz(6)
-  stock_adjustments stock_adjustments[]
-  stock_movements   stock_movements[]
-  transactions      transactions[]
-  cashier_sessions  cashier_sessions[]
-  outlets           outlets?            @relation(fields: [outlet_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_users_outlet")
-  tenants           tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_users_tenant")
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id           String              @db.Uuid
+  outlet_id           String?             @db.Uuid
+  name                String              @db.VarChar(100)
+  email               String              @db.VarChar(255)
+  password_hash       String
+  pin_hash            String?
+  login_code          String?             @db.VarChar(50)
+  pin_failed_attempts Int                 @default(0)
+  locked_until        DateTime?           @db.Timestamptz(6)
+  pin_changed_at      DateTime?           @db.Timestamptz(6)
+  role                String              @db.VarChar(20)
+  is_active           Boolean             @default(true)
+  created_at          DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
+  stock_adjustments   stock_adjustments[]
+  stock_movements     stock_movements[]
+  transactions        transactions[]
+  cashier_sessions    cashier_sessions[]
+  device_sessions     device_sessions[]
+  auth_audit_logs     auth_audit_logs[]
+  outlets             outlets?            @relation(fields: [outlet_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_users_outlet")
+  tenants             tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_users_tenant")
 
   @@unique([tenant_id, email], map: "uq_users_tenant_email")
+  @@unique([tenant_id, login_code], map: "uq_users_tenant_login_code")
   @@unique([id, tenant_id], map: "uq_users_id_tenant")
   @@index([tenant_id], map: "idx_users_tenant_id")
 }

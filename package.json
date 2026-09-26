@@ -27,6 +27,10 @@
     "test:sync": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/sync.integration.cjs",
     "test:optional-stock": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/optional-stock.integration.cjs",
     "test:product-category": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/product-category.integration.cjs",
+    "test:auth": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/auth.integration.cjs",
+    "test:user-pin": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/user-pin.integration.cjs",
+    "test:pin-login": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/pin-login.integration.cjs",
+    "test:device-session": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/device-session.integration.cjs",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "postinstall": "prisma skills sync || exit 0"
   },

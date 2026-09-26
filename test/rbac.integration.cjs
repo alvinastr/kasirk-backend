@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const { test } = require('node:test');
 const { ValidationPipe } = require('@nestjs/common');
+const { ConfigModule } = require('@nestjs/config');
 const { JwtService } = require('@nestjs/jwt');
 const { Test } = require('@nestjs/testing');
 const request = require('supertest');
@@ -34,7 +35,7 @@ test('RBAC protects existing endpoints', async (t) => {
         findOne: (user) => ({ resource, role: user.role }),
     });
     const testingModule = await Test.createTestingModule({
-        imports: [AuthModule],
+        imports: [ConfigModule.forRoot({ isGlobal: true }), AuthModule],
         controllers: [
             UsersController,
             OutletsController,

@@ -13,6 +13,7 @@ import { ProductsService } from '../src/products/products.service';
 import { CategoriesService } from '../src/categories/categories.service';
 import { CreateStockAdjustmentDto } from '../src/stock/dto/create-stock-adjustment.dto';
 import type { PrismaService } from '../src/prisma/prisma.service';
+import { ConfigService } from '@nestjs/config';
 
 // Requires an explicitly supplied disposable database; never reads DATABASE_URL.
 // Each run creates and drops only its own randomly named schema.
@@ -42,7 +43,9 @@ test('Phase 1 hardening against PostgreSQL', { skip: !process.env.HARDENING_DATA
             tenant_id: tenant.id, name: 'Owner', email: 'owner@example.test',
             password_hash: 'test-fixture', role: 'OWNER',
         } });
-        const user = new JwtStrategy().validate({ sub: actor.id, tenant_id: tenant.id, role: 'OWNER' });
+        const user = new JwtStrategy(new ConfigService({ JWT_SECRET: 'hardening-test-secret' })).validate({
+            sub: actor.id, tenant_id: tenant.id, role: 'OWNER', outlet_id: null,
+        });
         const outlet = await db.outlets.create({ data: { tenant_id: tenant.id, name: 'A' } });
         const foreignOutlet = await db.outlets.create({ data: { tenant_id: other.id, name: 'B' } });
         const foreignCategory = await db.categories.create({ data: { tenant_id: other.id, name: 'B' } });
@@ -55,9 +58,11 @@ test('Phase 1 hardening against PostgreSQL', { skip: !process.env.HARDENING_DATA
         await t.test('JWT preserves sub and rejects incomplete tenant context', () => {
             assert.equal(user.sub, actor.id);
             assert.equal(user.tenant_id, tenant.id);
+            assert.equal(user.outlet_id, null);
             assert.equal('user_id' in user, false);
-            assert.throws(() => new JwtStrategy().validate({ ...user, tenant_id: '' }));
-            assert.throws(() => new JwtStrategy().validate({ ...user, sub: '' }));
+            const strategy = new JwtStrategy(new ConfigService({ JWT_SECRET: 'hardening-test-secret' }));
+            assert.throws(() => strategy.validate({ ...user, tenant_id: '' }));
+            assert.throws(() => strategy.validate({ ...user, sub: '' }));
         });
 
         await t.test('DTO accepts provided, omitted and null reasons while rejecting blank reasons', async () => {

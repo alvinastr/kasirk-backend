@@ -3,32 +3,34 @@ import { PassportStrategy } from "@nestjs/passport";
 import {ExtractJwt, Strategy} from "passport-jwt";
 import { isUUID } from "class-validator";
 import type { JwtPayload } from "./types/jwt-payload.type";
+import { ConfigService } from '@nestjs/config';
+import { getJwtSecret } from './jwt.config';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
     
-    constructor() {
-        // Initialize the JWT strategy
+    constructor(configService: ConfigService) {
         super({
             jwtFromRequest:
                 ExtractJwt.fromAuthHeaderAsBearerToken(),
 
             secretOrKey:
-                'kasirkita-secret',
+                getJwtSecret(configService),
         });
     }
 
-    // Implement JWT strategy logic here
     validate(payload: JwtPayload): JwtPayload {
         if (!payload || !isUUID(payload.sub) || !isUUID(payload.tenant_id) ||
-            typeof payload.role !== "string" || !payload.role.trim()) {
+            typeof payload.role !== "string" || !payload.role.trim() ||
+            (payload.outlet_id != null && !isUUID(payload.outlet_id))) {
             throw new UnauthorizedException();
         }
 
         return {
             sub: payload.sub,
             tenant_id: payload.tenant_id,
-            role: payload.role
+            role: payload.role,
+            outlet_id: payload.outlet_id ?? null,
         };
 
     }
