@@ -137,6 +137,14 @@ test('Receipt HTTP API', { skip: !connectionString }, async (t) => {
     await db.product_stocks.create({
       data: { outlet_id: outlet.id, product_id: product.id, stock: 10 },
     });
+    await db.cashier_sessions.create({
+      data: {
+        tenant_id: tenant.id,
+        outlet_id: outlet.id,
+        user_id: cashier.id,
+        opening_cash: 0,
+      },
+    });
 
     const token = (user) =>
       jwt.sign({

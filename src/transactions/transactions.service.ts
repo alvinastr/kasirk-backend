@@ -199,8 +199,30 @@ export class TransactionsService {
         if (!['OWNER', 'ADMIN', 'CASHIER'].includes(actor.role)) {
             throw new ForbiddenException('Role cannot create transactions');
         }
-        if (actor.role === 'CASHIER' && actor.outlet_id !== dto.outlet_id) {
-            throw new ForbiddenException({ message: 'Outlet access denied', error_code: 'OUTLET_ACCESS_DENIED' });
+        if (actor.role === 'CASHIER') {
+            if (!actor.outlet_id) {
+                throw this.shiftRequired();
+            }
+            const shift = await tx.cashier_sessions.findFirst({
+                where: {
+                    tenant_id: user.tenant_id,
+                    user_id: user.sub,
+                    status: 'OPEN',
+                },
+                select: { outlet_id: true },
+            });
+            if (!shift) {
+                throw this.shiftRequired();
+            }
+            if (
+                dto.outlet_id !== actor.outlet_id ||
+                shift.outlet_id !== actor.outlet_id
+            ) {
+                throw new ForbiddenException({
+                    message: 'Transaction outlet does not match the cashier open shift',
+                    error_code: 'SHIFT_OUTLET_MISMATCH',
+                });
+            }
         }
 
         const existing = await tx.transactions.findFirst({
@@ -349,6 +371,13 @@ export class TransactionsService {
         if (!same) {
             throw new ConflictException({ message: 'client_transaction_id already belongs to a different request', error_code: 'IDEMPOTENCY_CONFLICT' });
         }
+    }
+
+    private shiftRequired() {
+        return new ForbiddenException({
+            message: 'Cashier must have an open shift before creating transactions',
+            error_code: 'OPEN_SHIFT_REQUIRED',
+        });
     }
 
     private money(value: bigint): number {

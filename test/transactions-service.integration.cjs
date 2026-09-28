@@ -21,7 +21,7 @@ test('Transaction CASH checkout', { skip: !process.env.TRANSACTION_TEST_DATABASE
     try {
         await admin.query(`CREATE SCHEMA "${schema}"`);
         await admin.query(`SET search_path TO "${schema}"`);
-        for (const name of ['20260914000000_baseline','20260914000100_transaction_tenant_integrity','20260915000000_optional_tenant_tax','20260915010000_add_customers','20260915020000_add_cashier_sessions','20260918000000_add_product_track_stock']) {
+        for (const name of ['20260914000000_baseline','20260914000100_transaction_tenant_integrity','20260915000000_optional_tenant_tax','20260915010000_add_customers','20260915020000_add_cashier_sessions','20260918000000_add_product_track_stock','20260926000000_auth_v2_schema_preparation','20260926010000_add_device_session_refresh_hash_unique']) {
             await admin.query(readFileSync(join(__dirname,'../prisma/migrations',name,'migration.sql'),'utf8').replaceAll('"public"',`"${schema}"`));
         }
         db = new PrismaClient({ adapter: new PrismaPg({ connectionString }, { schema }) });
@@ -135,13 +135,27 @@ test('Transaction CASH checkout', { skip: !process.env.TRANSACTION_TEST_DATABASE
             await assert.rejects(service.create({...user,sub:otherActor.id},dto),{status:401});await noSale(dto,p,10);
             const a=await service.create(user,dto);const b=await service.create(userB,{...dto,outlet_id:otherOutlet.id,items:[{product_id:foreign.id,quantity:1}]});assert.notEqual(a.transaction_id,b.transaction_id);
         });
-        await t.test('inactive resources and cashier outlet/discount restrictions',async()=>{
+        await t.test('cashier checkout requires an open shift at the assigned outlet',async()=>{
+            const p=await product();const dto=request(p);
+            const secondOutlet=await db.outlets.create({data:{tenant_id:tenant.id,name:'A2'}});
+            const cashier=await db.users.create({data:{tenant_id:tenant.id,outlet_id:outlet.id,name:'Cashier',email:'cashier@test',password_hash:'fixture',role:'CASHIER'}});
+            const ctx={...user,sub:cashier.id,role:'CASHIER'};
+            await assert.rejects(service.create(ctx,dto),e=>e.status===403&&e.getResponse().error_code==='OPEN_SHIFT_REQUIRED');
+            await noSale(dto,p,10);
+            const shift=await db.cashier_sessions.create({data:{tenant_id:tenant.id,outlet_id:secondOutlet.id,user_id:cashier.id,opening_cash:0}});
+            await assert.rejects(service.create(ctx,dto),e=>e.status===403&&e.getResponse().error_code==='SHIFT_OUTLET_MISMATCH');
+            await noSale(dto,p,10);
+            await db.cashier_sessions.update({where:{id:shift.id},data:{outlet_id:outlet.id}});
+            const result=await service.create(ctx,dto);assert.equal(result.status,'COMPLETED');assert.equal(await balance(p),8);
+        });
+        await t.test('inactive resources and cashier discount restrictions',async()=>{
             const p=await product();const dto=request(p);
             await db.products.update({where:{id:p.id},data:{is_active:false}});await assert.rejects(service.create(user,dto),{status:404});
             await db.products.update({where:{id:p.id},data:{is_active:true}});
-            const cashier=await db.users.create({data:{tenant_id:tenant.id,name:'Cashier',email:'cashier@test',password_hash:'fixture',role:'CASHIER'}});
-            const ctx={...user,sub:cashier.id};await assert.rejects(service.create(ctx,dto),{status:403});
-            await db.users.update({where:{id:cashier.id},data:{outlet_id:outlet.id}});await assert.rejects(service.create(ctx,{...dto,discount:1}),{status:403});
+            const cashier=await db.users.create({data:{tenant_id:tenant.id,outlet_id:outlet.id,name:'Cashier Discount',email:'cashier-discount@test',password_hash:'fixture',role:'CASHIER'}});
+            const ctx={...user,sub:cashier.id,role:'CASHIER'};
+            await db.cashier_sessions.create({data:{tenant_id:tenant.id,outlet_id:outlet.id,user_id:cashier.id,opening_cash:0}});
+            await assert.rejects(service.create(ctx,{...dto,discount:1}),{status:403});
             await db.users.update({where:{id:cashier.id},data:{is_active:false}});await assert.rejects(service.create(ctx,dto),{status:401});
         });
         await t.test('QRIS, insufficient cash, invalid discount and malformed items never write',async()=>{
