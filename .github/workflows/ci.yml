@@ -1,0 +1,86 @@
+name: Backend CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: kasirkita_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kasirkita_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/kasirkita_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/kasirkita_test
+      JWT_SECRET: phase1-ci-secret-at-least-32-bytes
+      NODE_ENV: test
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare reports directory
+        run: mkdir -p artifacts/test-logs
+
+      - name: Generate Prisma client
+        run: npx prisma generate 2>&1 | tee artifacts/test-logs/prisma-generate.log
+
+      - name: Validate Prisma schema
+        run: npx prisma validate 2>&1 | tee artifacts/test-logs/prisma-validate.log
+
+      - name: Apply database migrations
+        run: npx prisma migrate deploy 2>&1 | tee artifacts/test-logs/prisma-migrate.log
+
+      - name: Lint
+        run: npm run lint 2>&1 | tee artifacts/test-logs/lint.log
+
+      - name: Build
+        run: npm run build 2>&1 | tee artifacts/test-logs/build.log
+
+      - name: Run unit tests
+        run: npm run test:unit -- --runInBand 2>&1 | tee artifacts/test-logs/unit.log
+
+      - name: Run end-to-end tests
+        run: npm run test:e2e -- --runInBand 2>&1 | tee artifacts/test-logs/e2e.log
+
+      - name: Run integration tests
+        run: npm run test:integration 2>&1 | tee artifacts/test-logs/integration.log
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-test-logs
+          path: artifacts/test-logs
+          if-no-files-found: error
