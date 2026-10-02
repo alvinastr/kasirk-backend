@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Logger } from '@nestjs/common';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -56,7 +57,13 @@ async function bootstrap() {
     });
   }
 
-  await app.listen(process.env.PORT ?? 3000, '0.0.0.0');
+  // Enable SIGTERM/SIGINT handling so Docker stop triggers lifecycle cleanup.
+  app.enableShutdownHooks();
+
+  const port = parseInt(process.env.PORT ?? '3000', 10);
+  await app.listen(port, '0.0.0.0');
+
+  Logger.log(`Application listening on port ${port}`, 'Bootstrap');
 }
 
 bootstrap();
