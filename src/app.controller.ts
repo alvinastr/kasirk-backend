@@ -1,25 +1,25 @@
 import { Controller, Get } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { AppService } from './app.service';
-import { PrismaService } from './prisma/prisma.service';
+import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 @ApiTags('System')
 @Controller()
 export class AppController {
-  // constructor(private readonly appService: AppService) {}
-
-  // @Get()
-  // getHello(): string {
-  //   return this.appService.getHello();
-  // }
-  constructor(private readonly prisma: PrismaService) {}
-
   @Get()
   @ApiOperation({
-    summary: 'Database connectivity probe',
-    description: 'Public endpoint that queries all tenants to verify database connectivity. Used for health checks and deployment verification.',
+    summary: 'Health check',
+    description: 'Public endpoint that returns a minimal health status. Does not expose database records or environment details.',
   })
-  async testDatabase(){
-    return this.prisma.tenants.findMany();
+  @ApiOkResponse({
+    description: 'Minimal service health response.',
+    schema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', example: 'ok' },
+      },
+      required: ['status'],
+    },
+  })
+  getHealth(): { status: string } {
+    return { status: 'ok' };
   }
 }

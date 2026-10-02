@@ -1101,10 +1101,15 @@ Added production-quality Swagger/OpenAPI documentation for the NestJS backend AP
 - Controller metadata via `@ApiTags`, `@ApiOperation`, `@ApiBearerAuth`, `@ApiParam`, response decorators
 - Production-safe: docs off by default, no authentication tokens stored/cached
 
-**Known Documentation Caveat:**
-- Public `GET /` endpoint (database probe) is documented as-is: returns tenant records without authentication. This is a production security concern that should be addressed separately (e.g., remove endpoint or add RBAC).
+**Public Health Endpoint:**
+- `GET /` returns only `{ "status": "ok" }` and does not query or expose tenant, business, user, environment, or infrastructure data.
+- Regression tests verify the response contains only the `status` field.
 
 ------------------------------------------------------------------------
+
+# Phase 6B.1a - Production API Exposure Hardening (Completed)
+
+Replaced the public root database probe, which returned tenant records without authentication, with a minimal health/status endpoint. Updated OpenAPI response documentation and added regression coverage. No other unauthenticated data-exposure endpoints were found during the controller review; public authentication routes were confirmed to be auth flows.
 
 
 # Current Focus
