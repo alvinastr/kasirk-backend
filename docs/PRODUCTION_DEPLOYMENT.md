@@ -43,11 +43,20 @@ docker compose up -d postgres
 docker compose ps postgres
 ```
 
-3. Apply production migrations:
+3. Rebuild app image after any Dockerfile change, then apply production migrations:
 
 ```bash
-docker compose run --rm app npx prisma migrate deploy
+docker compose --env-file .env.production build app
+docker compose --env-file .env.production run --rm app npx prisma migrate deploy
 ```
+
+Prisma 7 CLI reads `datasource.url` from `/app/prisma.config.ts`, which the
+runtime image includes alongside `prisma/schema.prisma` and migrations.
+The config reads `DATABASE_URL` from container environment supplied by
+Compose `env_file`; `dotenv/config` preserves an already-set environment value.
+`.env.production` remains excluded from build context and image.
+NestJS PrismaPg adapter config remains separate. Migration is an explicit step,
+never app startup; CLI is bundled in image, without deployment-time download.
 
 4. Start app:
 
