@@ -1,3 +1,4 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
     IsEnum,
     IsInt,
@@ -22,10 +23,19 @@ class CashAmountOnlyConstraint implements ValidatorConstraintInterface {
 }
 
 export class CreateTransactionPaymentDto {
+    @ApiProperty({
+        enum: PaymentMethod,
+        description: 'Payment method. Currently service only supports CASH.',
+    })
     @IsEnum(PaymentMethod)
     method: PaymentMethod;
 
     // Missing CASH amount is invalid; any supplied QRIS amount is also invalid.
+    @ApiPropertyOptional({
+        type: Number,
+        minimum: 1,
+        description: 'Payment amount. Required for CASH method. Must not be supplied for QRIS.',
+    })
     @ValidateIf((payment: CreateTransactionPaymentDto) =>
         payment.method === PaymentMethod.CASH || payment.amount !== undefined)
     @IsInt()

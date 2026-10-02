@@ -1,3 +1,4 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsISO8601,
   IsOptional,
@@ -32,15 +33,31 @@ class ReportEndDateAfterStartDateConstraint implements ValidatorConstraintInterf
 }
 
 export class SalesSummaryQueryDto {
+  @ApiProperty({
+    type: String,
+    format: 'date',
+    description: 'Start date in YYYY-MM-DD format (WIB).',
+  })
   @IsISO8601({ strict: true })
   @Matches(DATE_ONLY, { message: 'start_date must use YYYY-MM-DD format' })
   start_date: string;
 
+  @ApiProperty({
+    type: String,
+    format: 'date',
+    description: 'End date in YYYY-MM-DD format (WIB). Must be later than start_date.',
+  })
   @IsISO8601({ strict: true })
   @Matches(DATE_ONLY, { message: 'end_date must use YYYY-MM-DD format' })
   @Validate(ReportEndDateAfterStartDateConstraint)
   end_date: string;
 
+  @ApiPropertyOptional({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description: 'Outlet identifier filter.',
+  })
   @IsOptional()
   @IsUUID()
   outlet_id?: string;

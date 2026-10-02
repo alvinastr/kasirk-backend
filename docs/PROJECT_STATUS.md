@@ -1066,10 +1066,46 @@ Any failure must rollback all changes.
 # Known Issues
 
 -   JWT secret masih hardcoded
--   Swagger documentation belum dibuat
 -   Unit test belum lengkap
 
+# Phase 6B.1 - Backend API Documentation / OpenAPI (Completed)
+
+Added production-quality Swagger/OpenAPI documentation for the NestJS backend API:
+
+**Features:**
+- Swagger UI available at `GET /docs` (when `ENABLE_SWAGGER_DOCS=true`)
+- OpenAPI JSON schema available at `GET /docs-json` (when `ENABLE_SWAGGER_DOCS=true`)
+- All 13 controllers documented with tags, operation summaries, and descriptions
+- All DTOs documented with OpenAPI metadata (ApiProperty/ApiPropertyOptional)
+- Bearer JWT authentication support through Swagger Authorize
+- Important status codes documented (400, 401, 403, 404, 409)
+- Role-based access control (RBAC) documented per endpoint
+- Transaction idempotency, stock management, and offline sync behavior described
+
+**Configuration:**
+- Docs are **disabled by default** for production security
+- Enable with environment variable: `ENABLE_SWAGGER_DOCS=true`
+- Docs require no authentication (Swagger UI itself is public when enabled, but protected endpoints require valid JWT)
+- Secrets, passwords, and tokens are never exposed in documentation
+
+**Accessing Documentation:**
+1. Set `ENABLE_SWAGGER_DOCS=true` in environment
+2. Run backend server
+3. Navigate to `http://localhost:3000/docs` (default port 3000)
+4. Use Swagger Authorize button to test protected endpoints with Bearer JWT token
+
+**Implementation Details:**
+- NestJS Swagger integration (`@nestjs/swagger@^12.0.2`)
+- Configuration in `src/main.ts` via `DocumentBuilder` and `SwaggerModule`
+- DTO metadata via `@ApiProperty` and `@ApiPropertyOptional` decorators
+- Controller metadata via `@ApiTags`, `@ApiOperation`, `@ApiBearerAuth`, `@ApiParam`, response decorators
+- Production-safe: docs off by default, no authentication tokens stored/cached
+
+**Known Documentation Caveat:**
+- Public `GET /` endpoint (database probe) is documented as-is: returns tenant records without authentication. This is a production security concern that should be addressed separately (e.g., remove endpoint or add RBAC).
+
 ------------------------------------------------------------------------
+
 
 # Current Focus
 

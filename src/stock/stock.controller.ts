@@ -8,6 +8,16 @@ import {
     UseGuards
 } from '@nestjs/common';
 
+import {
+    ApiBadRequestResponse,
+    ApiBearerAuth,
+    ApiForbiddenResponse,
+    ApiNotFoundResponse,
+    ApiOperation,
+    ApiParam,
+    ApiTags,
+    ApiUnauthorizedResponse,
+} from '@nestjs/swagger';
 
 import { JwtGuard } from '../auth/jwt.guard';
 
@@ -23,9 +33,13 @@ import { RolesGuard } from '../common/guards/roles.guard';
 
 
 
+@ApiTags('Stock')
+
 @Controller('stock')
 
 @UseGuards(JwtGuard, RolesGuard)
+
+@ApiBearerAuth('JWT')
 
 export class StockController {
 
@@ -37,6 +51,20 @@ export class StockController {
 
 
     @Get(':outlet_id')
+
+    @ApiOperation({
+        summary: 'Get stock levels by outlet',
+        description: 'Retrieve current stock quantities for all products at a specific outlet. Available to all authenticated roles.',
+    })
+    @ApiParam({
+        name: 'outlet_id',
+        type: 'string',
+        format: 'uuid',
+        description: 'Outlet UUID',
+    })
+    @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
+    @ApiForbiddenResponse({ description: 'Tenant mismatch' })
+    @ApiNotFoundResponse({ description: 'Outlet not found' })
 
     findByOutlet(
 
@@ -56,10 +84,18 @@ export class StockController {
 
 
 
-
     @Post('adjustment')
 
     @Roles('OWNER', 'ADMIN')
+
+    @ApiOperation({
+        summary: 'Create stock adjustment',
+        description: 'Manually adjust stock quantity for a product at an outlet with reason and notes. OWNER and ADMIN roles only.',
+    })
+    @ApiBadRequestResponse({ description: 'Invalid adjustment data or product not tracked' })
+    @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
+    @ApiForbiddenResponse({ description: 'Insufficient role (OWNER or ADMIN required)' })
+    @ApiNotFoundResponse({ description: 'Product or outlet not found' })
 
     createAdjustment(
 

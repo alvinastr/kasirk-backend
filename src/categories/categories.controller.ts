@@ -1,4 +1,13 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import {
+  ApiBadRequestResponse,
+  ApiBearerAuth,
+  ApiConflictResponse,
+  ApiForbiddenResponse,
+  ApiOperation,
+  ApiTags,
+  ApiUnauthorizedResponse,
+} from '@nestjs/swagger';
 import { JwtGuard } from '../auth/jwt.guard';
 
 import { CategoriesService } from './categories.service';
@@ -8,18 +17,34 @@ import { CreateCategoryDto } from './dto/create-category.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 
+@ApiTags('Categories')
 @Controller('categories')
 @UseGuards(JwtGuard, RolesGuard)
+@ApiBearerAuth('JWT')
 export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
   @Get()
+  @ApiOperation({
+    summary: 'List all product categories',
+    description: 'Retrieve all categories within the authenticated user\'s tenant. Available to all authenticated roles.',
+  })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
+  @ApiForbiddenResponse({ description: 'Tenant mismatch' })
   findAll(@CurrentUser() user: JwtPayload) {
     return this.categoriesService.findAll(user);
   }
 
   @Post()
   @Roles('OWNER', 'ADMIN')
+  @ApiOperation({
+    summary: 'Create a new category',
+    description: 'Add a product category for inventory organization. OWNER and ADMIN roles only.',
+  })
+  @ApiBadRequestResponse({ description: 'Invalid category data' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
+  @ApiForbiddenResponse({ description: 'Insufficient role (OWNER or ADMIN required)' })
+  @ApiConflictResponse({ description: 'Category name already exists in tenant' })
   create(@CurrentUser() user: JwtPayload, @Body() dto: CreateCategoryDto) {
     return this.categoriesService.create(user, dto);
   }
