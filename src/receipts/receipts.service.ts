@@ -51,6 +51,8 @@ const receiptSelect = {
       method: true,
       status: true,
       amount: true,
+      amount_received: true,
+      change_amount: true,
       provider: true,
       provider_reference: true,
       paid_at: true,
@@ -129,12 +131,15 @@ export class ReceiptsService {
     const payment =
       transaction.payments.find((candidate) => candidate.status === 'PAID') ??
       transaction.payments[0];
-    const change =
-      payment?.method === 'CASH' &&
-      payment.status === 'PAID' &&
-      payment.amount >= transaction.total
-        ? this.money(payment.amount - transaction.total)
-        : null;
+    let change: number | null = null;
+    if (payment?.method === 'CASH' && payment.status === 'PAID') {
+      if (payment.change_amount != null) {
+        change = this.money(payment.change_amount);
+      } else if (payment.amount_received == null && payment.amount >= transaction.total) {
+        // Historical RC2 rows stored tender in amount; preserve baseline behavior.
+        change = this.money(payment.amount - transaction.total);
+      }
+    }
 
     return {
       transaction_id: transaction.id,

@@ -56,4 +56,53 @@ describe('CreateTransactionDto V1', () => {
       items: [{ product_id: ids.product, quantity: 1, modifier_option_ids: [ids.option, ids.option] }],
     }))).resolves.not.toHaveLength(0);
   });
+
+  it('accepts V1 CASH amount_received and legacy CASH amount transport shapes', async () => {
+    await expect(errors(payload({ payment: { method: 'CASH', amount_received: 10_000 } }))).resolves.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'CASH', amount: 10_000 } }))).resolves.toHaveLength(0);
+  });
+
+  it('rejects ambiguous CASH and CASH without tender in DTO validation', async () => {
+    await expect(errors(payload({ payment: { method: 'CASH', amount: 10_000, amount_received: 10_000 } }))).resolves.not.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'CASH' } }))).resolves.not.toHaveLength(0);
+  });
+
+  it('accepts method-only QRIS and rejects typed cash fields on QRIS', async () => {
+    await expect(errors(payload({ payment: { method: 'QRIS' } }))).resolves.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'QRIS', amount: 10_000 } }))).resolves.not.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'QRIS', amount_received: 10_000 } }))).resolves.not.toHaveLength(0);
+  });
+
+  it('rejects non-integer, negative, and explicit-null cash tender fields', async () => {
+    await expect(errors(payload({ payment: { method: 'CASH', amount_received: 10.5 } }))).resolves.not.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'CASH', amount_received: -1 } }))).resolves.not.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'CASH', amount_received: null } }))).resolves.not.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'CASH', amount: null } }))).resolves.not.toHaveLength(0);
+  });
+
+  it.each([
+    ['omitted', undefined],
+    ['null', null],
+    ['string', 'CASH'],
+    ['number', 1],
+    ['array', []],
+    ['empty object', {}],
+  ])('rejects malformed payment object: %s', async (_case, payment) => {
+    const input: Record<string, unknown> = payload();
+    if (payment === undefined) {
+      delete input.payment;
+    } else {
+      input.payment = payment;
+    }
+    await expect(errors(input)).resolves.not.toHaveLength(0);
+  });
+
+  it('rejects unsupported payment methods', async () => {
+    await expect(errors(payload({ payment: { method: 'CARD', amount_received: 10_000 } }))).resolves.not.toHaveLength(0);
+  });
+
+  it('rejects client supplied change_amount as an unknown field', async () => {
+    await expect(errors(payload({ payment: { method: 'CASH', amount_received: 10_000, change_amount: 0 } }))).resolves.not.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'QRIS', change_amount: 0 } }))).resolves.not.toHaveLength(0);
+  });
 });

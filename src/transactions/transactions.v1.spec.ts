@@ -22,7 +22,7 @@ function response(overrides: any = {}) {
     customer_id: null, status: 'COMPLETED', subtotal: 300n, discount: 0n, tax: 0n, total: 300n, created_at: new Date(), cashier_session_id: id.session,
     transaction_items: [{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', product_id: id.product, quantity: 2, unit_price: 150n, unit_cost: 50n, subtotal: 300n,
       product_name_snapshot: 'Coffee', sku_snapshot: 'COF', base_price_snapshot: 100n, effective_price_snapshot: 150n, note_snapshot: 'less ice', transaction_item_modifiers: [{ id: 'm', modifier_group_id: id.group, modifier_option_id: id.option, group_name_snapshot: 'Size', option_name_snapshot: 'Large', price_delta_snapshot: 50 }] }],
-    payments: [{ id: 'p', method: 'CASH', status: 'PAID', amount: 500n, paid_at: new Date() }], ...overrides };
+    payments: [{ id: 'p', method: 'CASH', status: 'PAID', amount: 300n, amount_received: 500n, change_amount: 200n, paid_at: new Date() }], ...overrides };
 }
 function makeTx(config: any = {}) {
   const tx: any = {
@@ -49,6 +49,7 @@ function service(tx: any) { const prisma: any = { $transaction: jest.fn(async (f
     expect(result.total).toBe(300); expect(tx.transactions.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ subtotal: 300n, total: 300n }) }));
     expect(tx.transaction_items.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ unit_price: 150n, base_price_snapshot: 100n, effective_price_snapshot: 150n, note_snapshot: 'less ice' }) }));
     expect(tx.transaction_item_modifiers.createMany).toHaveBeenCalledWith(expect.objectContaining({ data: [expect.objectContaining({ group_name_snapshot: 'Size', option_name_snapshot: 'Large', price_delta_snapshot: 50 })] }));
+    expect(tx.payments.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ method: PaymentMethod.CASH, amount: 300n, amount_received: 500n, change_amount: 200n }) }));
   });
   it('allows duplicate product lines and preserves null note', async () => {
     const tx = makeTx(); tx.product_modifier_groups.findMany.mockResolvedValue([]); const { service: s } = service(tx);
@@ -137,6 +138,21 @@ function service(tx: any) { const prisma: any = { $transaction: jest.fn(async (f
     const missing = makeTx(); missing.products.findMany.mockResolvedValue([]); const { service: b } = service(missing);
     await expect(b.create(user as any, input())).rejects.toBeInstanceOf(NotFoundException);
   });
+  it.each([
+    ['omitted', undefined],
+    ['null', null],
+    ['string', 'CASH'],
+    ['number', 1],
+    ['array', []],
+    ['empty object', {}],
+  ])('safely rejects malformed payment object before service payment access: %s', async (_case, payment) => {
+    const tx = makeTx(); const { service: s } = service(tx); const body: Record<string, unknown> = input();
+    if (payment === undefined) delete body.payment;
+    else body.payment = payment;
+    await expect(s.create(user as any, body as any)).rejects.toBeInstanceOf(BadRequestException);
+    expect(tx.transactions.create).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid required fields and tenant/user context', async () => {
     const { service: s } = service(makeTx()); await expect(s.create(user as any, input({ payment: { method: 'CASH' } }))).rejects.toBeInstanceOf(BadRequestException);
     await expect(s.create({ ...user, tenant_id: 'not-a-uuid' } as any, input())).rejects.toBeInstanceOf(UnauthorizedException);
@@ -169,6 +185,108 @@ function service(tx: any) { const prisma: any = { $transaction: jest.fn(async (f
     expect(tx.product_stocks.updateMany).not.toHaveBeenCalled();
     expect(tx.transaction_items.create).not.toHaveBeenCalled();
     expect(tx.transaction_item_modifiers.createMany).not.toHaveBeenCalled();
+  });
+  it('accepts V1 CASH amount_received and calculates change from server total', async () => {
+    const tx = makeTx(); const { service: s } = service(tx);
+    await s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount_received: 500 } }));
+    expect(tx.payments.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ method: PaymentMethod.CASH, amount: 300n, amount_received: 500n, change_amount: 200n }) }));
+  });
+  it('treats legacy CASH amount as tender, not transaction total', async () => {
+    const tx = makeTx(); const { service: s } = service(tx);
+    await s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount: 50_000 } }));
+    expect(tx.payments.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ amount: 300n, amount_received: 50_000n, change_amount: 49_700n }) }));
+  });
+  it('rejects ambiguous CASH amount and amount_received before writes', async () => {
+    const tx = makeTx(); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount: 500, amount_received: 500 } })))
+      .rejects.toMatchObject({ response: { error_code: 'PAYMENT_FIELD_NOT_ALLOWED' } });
+    expect(tx.transactions.create).not.toHaveBeenCalled();
+  });
+  it('rejects CASH without a tender field before writes', async () => {
+    const tx = makeTx(); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH } })))
+      .rejects.toMatchObject({ response: { error_code: 'CASH_AMOUNT_RECEIVED_REQUIRED' } });
+    expect(tx.transactions.create).not.toHaveBeenCalled();
+  });
+  it('rejects legacy CASH underpayment before transaction and stock writes', async () => {
+    const tx = makeTx(); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount: 299 } })))
+      .rejects.toMatchObject({ response: { error_code: 'CASH_UNDERPAYMENT' } });
+    expect(tx.transactions.create).not.toHaveBeenCalled();
+    expect(tx.product_stocks.updateMany).not.toHaveBeenCalled();
+  });
+  it('persists identical final DB semantics for legacy and V1 CASH transports', async () => {
+    const legacyTx = makeTx(); const v1Tx = makeTx();
+    await service(legacyTx).service.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount: 700 } }));
+    await service(v1Tx).service.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount_received: 700 } }));
+    expect(legacyTx.payments.create.mock.calls[0][0].data).toEqual(expect.objectContaining({ method: PaymentMethod.CASH, amount: 300n, amount_received: 700n, change_amount: 400n }));
+    expect(v1Tx.payments.create.mock.calls[0][0].data).toEqual(expect.objectContaining({ method: PaymentMethod.CASH, amount: 300n, amount_received: 700n, change_amount: 400n }));
+  });
+  it('treats historical RC2 CASH tender as persisted amount for an equivalent legacy retry', async () => {
+    const tx = makeTx(); const existing = response({ payments: [{ id: 'p', method: 'CASH', status: 'PAID', amount: 50_000n, amount_received: null, change_amount: null, paid_at: new Date() }] });
+    tx.transactions.findFirst.mockResolvedValue(existing); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount: 50_000 } }))).resolves.toMatchObject({ transaction_id: existing.id });
+    expect(tx.transactions.create).not.toHaveBeenCalled();
+    expect(tx.transaction_item_modifiers.createMany).not.toHaveBeenCalled();
+    expect(tx.product_stocks.updateMany).not.toHaveBeenCalled();
+    expect(tx.payments.create).not.toHaveBeenCalled();
+  });
+  it('treats historical RC2 CASH tender as persisted amount for an equivalent V1 retry', async () => {
+    const tx = makeTx(); const existing = response({ payments: [{ id: 'p', method: 'CASH', status: 'PAID', amount: 50_000n, amount_received: null, change_amount: null, paid_at: new Date() }] });
+    tx.transactions.findFirst.mockResolvedValue(existing); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount_received: 50_000 } }))).resolves.toMatchObject({ transaction_id: existing.id });
+    expect(tx.payments.create).not.toHaveBeenCalled();
+  });
+  it('uses persisted amount_received rather than settled amount for a new M5 CASH retry', async () => {
+    const tx = makeTx(); tx.transactions.findFirst.mockResolvedValue(response({ payments: [{ id: 'p', method: 'CASH', status: 'PAID', amount: 300n, amount_received: 500n, change_amount: 200n, paid_at: new Date() }] }));
+    const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount_received: 300 } })))
+      .rejects.toMatchObject({ response: { error_code: 'IDEMPOTENCY_PAYLOAD_MISMATCH' } });
+    expect(tx.payments.create).not.toHaveBeenCalled();
+  });
+  it('treats legacy CASH retry with the same tender as idempotent', async () => {
+    const tx = makeTx(); const existing = response({ payments: [{ id: 'p', method: 'CASH', status: 'PAID', amount: 300n, amount_received: 50_000n, change_amount: 49_700n, paid_at: new Date() }] });
+    tx.transactions.findFirst.mockResolvedValue(existing); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount: 50_000 } }))).resolves.toMatchObject({ transaction_id: existing.id });
+    expect(tx.transactions.create).not.toHaveBeenCalled();
+  });
+  it('treats legacy CASH then equivalent V1 CASH retry as semantically idempotent', async () => {
+    const tx = makeTx(); const existing = response({ payments: [{ id: 'p', method: 'CASH', status: 'PAID', amount: 300n, amount_received: 50_000n, change_amount: 49_700n, paid_at: new Date() }] });
+    tx.transactions.findFirst.mockResolvedValue(existing); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount_received: 50_000 } }))).resolves.toMatchObject({ transaction_id: existing.id });
+  });
+  it('treats V1 CASH then equivalent legacy CASH retry as semantically idempotent', async () => {
+    const tx = makeTx(); const existing = response({ payments: [{ id: 'p', method: 'CASH', status: 'PAID', amount: 300n, amount_received: 50_000n, change_amount: 49_700n, paid_at: new Date() }] });
+    tx.transactions.findFirst.mockResolvedValue(existing); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount: 50_000 } }))).resolves.toMatchObject({ transaction_id: existing.id });
+  });
+  it('rejects an idempotent retry with a different resolved CASH tender', async () => {
+    const tx = makeTx(); tx.transactions.findFirst.mockResolvedValue(response({ payments: [{ id: 'p', method: 'CASH', status: 'PAID', amount: 300n, amount_received: 50_000n, change_amount: 49_700n, paid_at: new Date() }] }));
+    const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount_received: 49_999 } })))
+      .rejects.toMatchObject({ response: { error_code: 'IDEMPOTENCY_PAYLOAD_MISMATCH' } });
+  });
+  it('rejects CASH to QRIS idempotency mismatch', async () => {
+    const tx = makeTx(); tx.transactions.findFirst.mockResolvedValue(response()); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.QRIS } })))
+      .rejects.toMatchObject({ response: { error_code: 'IDEMPOTENCY_PAYLOAD_MISMATCH' } });
+  });
+  it('rejects QRIS with CASH-only amount fields', async () => {
+    const tx = makeTx(); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.QRIS, amount: 500 } })))
+      .rejects.toMatchObject({ response: { error_code: 'PAYMENT_FIELD_NOT_ALLOWED' } });
+    expect(tx.transactions.create).not.toHaveBeenCalled();
+  });
+  it('persists QRIS as settled total with null received and change', async () => {
+    const tx = makeTx(); tx.transactions.update.mockResolvedValue(response({ payments: [{ id: 'p', method: 'QRIS', status: 'PAID', amount: 300n, amount_received: null, change_amount: null, paid_at: new Date() }] }));
+    const { service: s } = service(tx); const result = await s.create(user as any, input({ payment: { method: PaymentMethod.QRIS } }));
+    expect(tx.payments.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ method: PaymentMethod.QRIS, amount: 300n, amount_received: null, change_amount: null }) }));
+    expect(result.change).toBeNull();
+  });
+  it('rejects client-supplied change_amount', async () => {
+    const tx = makeTx(); const { service: s } = service(tx);
+    await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount_received: 500, change_amount: 200 } }))).rejects.toBeInstanceOf(BadRequestException);
+    expect(tx.transactions.create).not.toHaveBeenCalled();
   });
   it('retries transient duplicate-request conflicts and eventually reports retry required', async () => {
     const error = new Prisma.PrismaClientKnownRequestError('duplicate', { code: 'P2002', clientVersion: 'test', meta: { target: 'uq_transactions_client_id' } });

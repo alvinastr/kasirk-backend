@@ -64,7 +64,7 @@ const responseSelect = {
         orderBy: { created_at: 'asc' },
     },
     payments: {
-        select: { id: true, method: true, status: true, amount: true, paid_at: true },
+        select: { id: true, method: true, status: true, amount: true, amount_received: true, change_amount: true, paid_at: true },
         orderBy: { created_at: 'asc' },
     },
 } satisfies Prisma.transactionsSelect;
@@ -109,12 +109,21 @@ export class TransactionsService {
         }
         // Keep validation for callers that invoke the service outside HTTP.
         const dto = plainToInstance(CreateTransactionDto, input);
-        if (!dto || (await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).length) {
+        if (!dto) {
             throw new BadRequestException({ message: 'Invalid transaction input', error_code: 'INVALID_INPUT' });
         }
-        if (dto.payment.method !== PaymentMethod.CASH) {
-            throw new BadRequestException({ message: 'Only CASH is available', error_code: 'PAYMENT_METHOD_NOT_AVAILABLE' });
+        const validationErrors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+        if (validationErrors.length) {
+            const payment = dto.payment as unknown;
+            if (payment !== null && typeof payment === 'object' && !Array.isArray(payment)) {
+                const method = (payment as { method?: unknown }).method;
+                if (method === PaymentMethod.CASH || method === PaymentMethod.QRIS) {
+                    this.assertPaymentShape(dto);
+                }
+            }
+            throw new BadRequestException({ message: 'Invalid transaction input', error_code: 'INVALID_INPUT' });
         }
+        this.assertPaymentShape(dto);
         const actorContext = { ...user, sub: user.sub.toLowerCase(), tenant_id: user.tenant_id.toLowerCase() };
         dto.discount = dto.discount ?? 0;
         dto.outlet_id = dto.outlet_id.toLowerCase();
@@ -471,9 +480,9 @@ export class TransactionsService {
         this.money(tax);
         this.money(total);
         if (total <= 0n) throw new BadRequestException('Transaction total must be positive');
-        const amount = BigInt(dto.payment.amount!);
-        if (amount < total) {
-            throw new BadRequestException({ message: 'Cash amount is less than total', error_code: 'INSUFFICIENT_PAYMENT' });
+        const resolvedTender = this.resolveTender(dto.payment);
+        if (resolvedTender !== null && resolvedTender < total) {
+            throw new BadRequestException({ message: 'Cash amount received is less than total', error_code: 'CASH_UNDERPAYMENT' });
         }
 
         // Persist transaction header with cashier_session_id.
@@ -582,9 +591,11 @@ export class TransactionsService {
             data: {
                 tenant_id: user.tenant_id,
                 transaction_id: transaction.id,
-                method: PaymentMethod.CASH,
+                method: dto.payment.method,
                 status: PaymentStatus.PAID,
-                amount,
+                amount: total,
+                amount_received: resolvedTender,
+                change_amount: resolvedTender !== null ? resolvedTender - total : null,
                 paid_at: new Date(),
             },
         });
@@ -623,8 +634,7 @@ export class TransactionsService {
             existing.customer_id === (dto.customer_id ?? null) &&
             existing.discount === BigInt(dto.discount) &&
             existing.payments.length === 1 &&
-            payment?.method === PaymentMethod.CASH &&
-            payment?.amount === BigInt(dto.payment.amount!) &&
+            this.samePayment(payment, dto) &&
             JSON.stringify(persistedLines) === JSON.stringify(requestedLines);
         if (!same) {
             throw new ConflictException({
@@ -634,11 +644,72 @@ export class TransactionsService {
         }
     }
 
+    private resolveTender(payment: CreateTransactionDto['payment']): bigint | null {
+        if (payment.method !== PaymentMethod.CASH) return null;
+        return BigInt((payment.amount_received ?? payment.amount)!);
+    }
+
+    private samePayment(payment: TransactionRecord['payments'][number] | undefined, dto: CreateTransactionDto): boolean {
+        if (!payment || payment.method !== dto.payment.method) return false;
+        if (dto.payment.method === PaymentMethod.CASH) {
+            const requestedTender = this.resolveTender(dto.payment);
+            // Pre-M5 CASH rows stored tender in amount and have no amount_received.
+            // Newly processed M5 rows always compare the canonical amount_received.
+            const persistedTender = payment.amount_received ?? payment.amount;
+            return persistedTender === requestedTender;
+        }
+        if (dto.payment.method === PaymentMethod.QRIS) {
+            return payment.amount_received === null && payment.change_amount === null;
+        }
+        return false;
+    }
+
     private shiftRequired() {
         return new ForbiddenException({
             message: 'Cashier must have an open shift before creating transactions',
             error_code: 'OPEN_SHIFT_REQUIRED',
         });
+    }
+
+    /**
+     * M5: Validate payment shape before transaction processing.
+     * - CASH: exactly one of legacy amount or V1 amount_received.
+     * - QRIS: no cash fields.
+     */
+    private assertPaymentShape(dto: CreateTransactionDto) {
+        const p = dto.payment;
+        if ('change_amount' in (p as unknown as Record<string, unknown>)) {
+            throw new BadRequestException({
+                message: 'change_amount is server-derived and must not be supplied',
+                error_code: 'PAYMENT_FIELD_NOT_ALLOWED',
+            });
+        }
+        if (p.method === PaymentMethod.CASH) {
+            const hasLegacy = p.amount !== undefined;
+            const hasV1 = p.amount_received !== undefined;
+            if (!hasLegacy && !hasV1) {
+                throw new BadRequestException({
+                    message: 'CASH requires amount_received',
+                    error_code: 'CASH_AMOUNT_RECEIVED_REQUIRED',
+                });
+            }
+            if (hasLegacy && hasV1) {
+                throw new BadRequestException({
+                    message: 'Cash payment fields are mutually exclusive; use payment.amount (legacy) or payment.amount_received (V1)',
+                    error_code: 'PAYMENT_FIELD_NOT_ALLOWED',
+                });
+            }
+            return;
+        }
+        if (p.method === PaymentMethod.QRIS) {
+            if (p.amount !== undefined || p.amount_received !== undefined) {
+                throw new BadRequestException({
+                    message: 'QRIS must not carry cash payment fields',
+                    error_code: 'PAYMENT_FIELD_NOT_ALLOWED',
+                });
+            }
+            return;
+        }
     }
 
     private money(value: bigint): number {
@@ -666,8 +737,7 @@ export class TransactionsService {
 
     private toResponse(transaction: TransactionRecord) {
         const payment = transaction.payments.length === 1 ? transaction.payments[0] : undefined;
-        const change = payment?.method === PaymentMethod.CASH && payment.status === PaymentStatus.PAID &&
-            payment.amount >= transaction.total ? this.money(payment.amount - transaction.total) : null;
+        const change = payment?.change_amount != null ? this.money(payment.change_amount) : null;
         return {
             ...this.toSummary(transaction),
             cashier_session_id: transaction.cashier_session_id,
@@ -692,7 +762,12 @@ export class TransactionsService {
                     price_delta_snapshot: m.price_delta_snapshot,
                 })),
             })),
-            payments: transaction.payments.map((p) => ({ ...p, amount: this.money(p.amount) })),
+            payments: transaction.payments.map((p) => ({
+                ...p,
+                amount: this.money(p.amount),
+                amount_received: p.amount_received != null ? this.money(p.amount_received) : null,
+                change_amount: p.change_amount != null ? this.money(p.change_amount) : null,
+            })),
             change,
             created_at: transaction.created_at,
         };
