@@ -359,6 +359,7 @@ model transaction_items {
   sku_snapshot               String?                      @db.VarChar(100)
   base_price_snapshot        BigInt?
   effective_price_snapshot   BigInt?
+  note_snapshot              String?                      @db.VarChar(255)
   created_at                 DateTime                     @default(now()) @db.Timestamptz(6)
   products                   products                     @relation(fields: [product_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transaction_items_product_same_tenant")
   transactions               transactions                 @relation(fields: [transaction_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_transaction_items_transaction_same_tenant")

@@ -2,7 +2,6 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
-  ArrayUnique,
   IsArray,
   IsDefined,
   IsInt,
@@ -34,6 +33,14 @@ export class CreateTransactionDto {
   @IsUUID()
   outlet_id: string;
 
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    description: 'Open cashier session (shift) that owns this sale.',
+  })
+  @IsUUID()
+  cashier_session_id: string;
+
   @ApiPropertyOptional({
     type: String,
     format: 'uuid',
@@ -47,13 +54,10 @@ export class CreateTransactionDto {
   @ApiProperty({
     type: () => [CreateTransactionItemDto],
     minItems: 1,
-    description: 'Line items. Product identifiers must be unique.',
+    description: 'Line items. The same product may appear on several lines when modifiers or notes differ.',
   })
   @IsArray()
   @ArrayMinSize(1)
-  @ArrayUnique((item: CreateTransactionItemDto | null) =>
-    typeof item?.product_id === 'string' ? item.product_id.toLowerCase() : undefined,
-    { message: 'items must contain unique product_id values' })
   @IsObject({ each: true })
   @ValidateNested({ each: true })
   @Type(() => CreateTransactionItemDto)
