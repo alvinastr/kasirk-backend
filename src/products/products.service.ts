@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { ReplaceProductModifierGroupsDto } from './dto/replace-product-modifier-groups.dto';
+import { QueryProductsDto } from './dto/query-products.dto';
 
 const MODIFIER_SELECTION_TYPES = ['SINGLE', 'MULTIPLE'] as const;
 
@@ -17,13 +18,91 @@ const MODIFIER_SELECTION_TYPES = ['SINGLE', 'MULTIPLE'] as const;
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  findAll(user: JwtPayload) {
-    return this.prisma.products.findMany({
-      where: {
-        tenant_id: user.tenant_id,
-        is_active: true,
+  async findAll(user: JwtPayload, query?: QueryProductsDto) {
+    const includeModifiers = query?.include_modifiers ?? true;
+
+    if (query?.category_id) {
+      await this.validateCategory(user.tenant_id, query.category_id);
+    }
+
+    const searchConditions: any[] = [];
+    if (query?.q && query.q.length > 0) {
+      searchConditions.push(
+        { name: { contains: query.q, mode: 'insensitive' } },
+        { sku: { contains: query.q, mode: 'insensitive' } },
+      );
+    }
+
+    const where = {
+      tenant_id: user.tenant_id,
+      is_active: true,
+      ...(query?.category_id ? { category_id: query.category_id } : {}),
+      ...(searchConditions.length > 0 ? { OR: searchConditions } : {}),
+    };
+    const orderBy = [{ name: 'asc' as const }, { id: 'asc' as const }];
+
+    if (!includeModifiers) {
+      const products = await this.prisma.products.findMany({
+        where,
+        include: {
+          categories: true,
+          product_stocks: this.stockInclude(user),
+        },
+        orderBy,
+      });
+      return products.map(({ categories, product_stocks, ...fields }) => ({
+        ...fields,
+        category: categories
+          ? { id: categories.id, name: categories.name }
+          : null,
+        modifier_groups: [],
+        stock: this.resolveStock(fields.track_stock, product_stocks, user.outlet_id),
+      }));
+    }
+
+    const products = await this.prisma.products.findMany({
+      where,
+      include: {
+        categories: true,
+        product_stocks: this.stockInclude(user),
+        product_modifier_groups: {
+          where: {
+            tenant_id: user.tenant_id,
+            modifier_groups: { is_active: true },
+          },
+          include: {
+            modifier_groups: {
+              include: {
+                options: {
+                  where: { tenant_id: user.tenant_id, is_active: true },
+                  orderBy: [{ display_order: 'asc' }, { id: 'asc' }],
+                },
+              },
+            },
+          },
+          orderBy: [{ display_order: 'asc' }, { modifier_group_id: 'asc' }],
+        },
       },
+      orderBy,
     });
+
+    return products.map(
+      ({ categories, product_modifier_groups, product_stocks, ...fields }) => ({
+        ...fields,
+        category: categories
+          ? { id: categories.id, name: categories.name }
+          : null,
+        modifier_groups: product_modifier_groups.map((assignment) => ({
+          id: assignment.modifier_groups.id,
+          name: assignment.modifier_groups.name,
+          required: assignment.required,
+          selection_type: assignment.selection_type,
+          display_order: assignment.display_order,
+          options: assignment.modifier_groups.options,
+        })),
+        stock: this.resolveStock(fields.track_stock, product_stocks, user.outlet_id),
+      }),
+    );
   }
 
   async create(user: JwtPayload, dto: CreateProductDto) {
@@ -198,6 +277,30 @@ export class ProductsService {
     await this.prisma.$transaction(operations);
 
     return this.getModifierGroups(user, productId);
+  }
+
+  private stockInclude(user: JwtPayload) {
+    if (!user.outlet_id) {
+      return false;
+    }
+    return {
+      where: {
+        outlet_id: user.outlet_id,
+        outlets: { tenant_id: user.tenant_id },
+      },
+      select: { stock: true },
+    };
+  }
+
+  private resolveStock(
+    track_stock: boolean,
+    product_stocks: Array<{ stock: number }>,
+    outletId: string | null,
+  ): number | null {
+    if (!track_stock || !outletId) {
+      return null;
+    }
+    return product_stocks.length > 0 ? product_stocks[0].stock : 0;
   }
 
   private async validateProductOwnership(

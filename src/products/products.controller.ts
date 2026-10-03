@@ -1,14 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  Put,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Put, Query, UseGuards } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
@@ -18,6 +8,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -26,6 +17,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { ProductsService } from './products.service';
 import type { JwtPayload } from '../auth/types/jwt-payload.type';
 import { CreateProductDto } from './dto/create-product.dto';
+import { QueryProductsDto } from './dto/query-products.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { UpdateProductDto } from './dto/update-product.dto';
@@ -41,12 +33,36 @@ export class ProductsController {
   @Get()
   @ApiOperation({
     summary: 'List all products',
-    description: 'Retrieve all products within the authenticated user\'s tenant. Available to all authenticated roles.',
+    description:
+      'Retrieve all products within the authenticated user\'s tenant. Available to all authenticated roles. Optional q (case-insensitive name/SKU search), category_id (tenant-owned category filter), and include_modifiers (default true) query parameters are supported.',
+  })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    type: String,
+    description: 'Case-insensitive search query for product name or SKU',
+  })
+  @ApiQuery({
+    name: 'category_id',
+    required: false,
+    type: String,
+    format: 'uuid',
+    description: 'Filter by tenant-owned category UUID',
+  })
+  @ApiQuery({
+    name: 'include_modifiers',
+    required: false,
+    type: Boolean,
+    description: 'Include active modifier groups/options (default true)',
   })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
   @ApiForbiddenResponse({ description: 'Tenant mismatch' })
-  findAll(@CurrentUser() user: JwtPayload) {
-    return this.productsService.findAll(user);
+  @ApiBadRequestResponse({ description: 'Invalid query parameters' })
+  findAll(
+    @CurrentUser() user: JwtPayload,
+    @Query() query: QueryProductsDto,
+  ) {
+    return this.productsService.findAll(user, query);
   }
 
   @Post()
