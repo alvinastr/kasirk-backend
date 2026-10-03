@@ -47,12 +47,12 @@ export class ShiftsController {
   @Post('open')
   @ApiOperation({
     summary: 'Open a new shift',
-    description: 'Start a cashier shift for an outlet with opening cash balance. Only one shift per outlet can be active. Accessible by OWNER, ADMIN, and CASHIER roles.',
+    description: 'Start a cashier shift for an outlet. Only one shift per tenant/user can be active.',
   })
-  @ApiBadRequestResponse({ description: 'Invalid opening balance or outlet not found' })
+  @ApiBadRequestResponse({ description: 'Invalid outlet or request body' })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
-  @ApiForbiddenResponse({ description: 'Insufficient role or tenant mismatch' })
-  @ApiConflictResponse({ description: 'Outlet already has an active shift' })
+  @ApiForbiddenResponse({ description: 'Insufficient role, tenant mismatch, or outlet access denied' })
+  @ApiConflictResponse({ description: 'User already has an active shift' })
   open(@CurrentUser() user: JwtPayload, @Body() dto: OpenShiftDto) {
     return this.shiftsService.open(user, dto);
   }
@@ -69,10 +69,17 @@ export class ShiftsController {
     return this.shiftsService.current(user);
   }
 
+  @Get(':id/summary')
+  @ApiOperation({ summary: 'Get a shift sales summary' })
+  @ApiParam({ name: 'id', type: 'string', format: 'uuid', description: 'Shift UUID' })
+  summary(@CurrentUser() user: JwtPayload, @Param('id', new ParseUUIDPipe()) id: string) {
+    return this.shiftsService.summary(user, id);
+  }
+
   @Post(':id/close')
   @ApiOperation({
     summary: 'Close an active shift',
-    description: 'End a shift by recording closing cash balance. Calculates shift summary including total sales and cash variance.',
+    description: 'End a shift with an empty V1 body. The server derives the final summary from persisted sales; no cash reconciliation or variance is accepted.',
   })
   @ApiParam({
     name: 'id',
@@ -80,7 +87,7 @@ export class ShiftsController {
     format: 'uuid',
     description: 'Shift UUID',
   })
-  @ApiBadRequestResponse({ description: 'Invalid closing balance or shift already closed' })
+  @ApiBadRequestResponse({ description: 'Invalid close request body' })
   @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
   @ApiForbiddenResponse({ description: 'Insufficient role or tenant mismatch' })
   @ApiNotFoundResponse({ description: 'Shift not found' })

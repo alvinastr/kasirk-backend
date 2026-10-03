@@ -28,6 +28,8 @@ const shiftSelect = {
   status: true,
   opened_at: true,
   closed_at: true,
+  outlets: { select: { id: true, name: true } },
+  users: { select: { id: true, name: true } },
 } satisfies Prisma.cashier_sessionsSelect;
 
 type ShiftRecord = Prisma.cashier_sessionsGetPayload<{
@@ -41,7 +43,6 @@ type ActorContext = {
   outletId: string | null;
 };
 
-const MAX_BIGINT = 9_223_372_036_854_775_807n;
 const MIN_SAFE_INTEGER = BigInt(Number.MIN_SAFE_INTEGER);
 const MAX_SAFE_INTEGER = BigInt(Number.MAX_SAFE_INTEGER);
 
@@ -90,7 +91,7 @@ export class ShiftsService {
           tenant_id: actor.tenantId,
           outlet_id: outletId,
           user_id: actor.userId,
-          opening_cash: BigInt(dto.opening_cash),
+          opening_cash: null,
           status: 'OPEN',
         },
         select: shiftSelect,
@@ -126,7 +127,7 @@ export class ShiftsService {
       throw new BadRequestException('Invalid shift ID');
     }
     const shiftId = id.toLowerCase();
-    const dto = await this.validDto(CloseShiftDto, input);
+    await this.validDto(CloseShiftDto, input);
 
     return this.serializableWrite(async (tx) => {
       const actor = await this.actorContext(tx, user);
@@ -150,31 +151,14 @@ export class ShiftsService {
         });
       }
 
-      const closedAt = new Date();
-      const cashSales = await tx.transactions.aggregate({
-        where: {
-          tenant_id: actor.tenantId,
-          outlet_id: shift.outlet_id,
-          user_id: shift.user_id,
-          status: 'COMPLETED',
-          payments: {
-            some: {
-              tenant_id: actor.tenantId,
-              method: 'CASH',
-              status: 'PAID',
-              paid_at: { gte: shift.opened_at, lte: closedAt },
-            },
-          },
-        },
-        _sum: { total: true },
-      });
-      const expectedCash = (shift.opening_cash ?? 0n) + (cashSales._sum.total ?? 0n);
-      const closingCash = BigInt(dto.closing_cash);
-      const difference = closingCash - expectedCash;
-      this.assertDatabaseMoney(expectedCash);
-      this.assertSafeMoney(expectedCash);
-      this.assertSafeMoney(difference);
+      // V1-M6 contract: the server derives the final operational summary
+      // inside the same atomic transaction, from explicitly linked
+      // COMPLETED transactions, before the state transition. The summary is
+      // returned by GET /shifts/:id/summary; this close response keeps the
+      // frozen shift response shape (no reconciliation values).
+      await this.deriveSummary(tx, actor.tenantId, shift);
 
+      const closedAt = new Date();
       const updated = await tx.cashier_sessions.updateMany({
         where: {
           id: shift.id,
@@ -183,9 +167,9 @@ export class ShiftsService {
         },
         data: {
           status: 'CLOSED',
-          closing_cash: closingCash,
-          expected_cash: expectedCash,
-          difference,
+          closing_cash: null,
+          expected_cash: null,
+          difference: null,
           closed_at: closedAt,
         },
       });
@@ -205,6 +189,66 @@ export class ShiftsService {
       }
       return this.toResponse(closedShift);
     });
+  }
+
+  async summary(user: JwtPayload, id: string) {
+    if (!isUUID(id)) throw new BadRequestException('Invalid shift ID');
+    return this.prisma.$transaction(async (tx) => {
+      const actor = await this.actorContext(tx, user);
+      const shift = await tx.cashier_sessions.findFirst({
+        where: { id: id.toLowerCase(), tenant_id: actor.tenantId },
+        select: shiftSelect,
+      });
+      if (!shift) throw new NotFoundException({ message: 'Shift not found', error_code: 'SHIFT_NOT_FOUND' });
+      if (actor.role === 'CASHIER' && shift.user_id !== actor.userId) {
+        throw new ForbiddenException({ message: 'Shift access denied', error_code: 'SHIFT_ACCESS_DENIED' });
+      }
+      return this.deriveSummary(tx, actor.tenantId, shift);
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+  }
+
+  private async deriveSummary(tx: Prisma.TransactionClient, tenantId: string, shift: ShiftRecord) {
+    const where = { tenant_id: tenantId, cashier_session_id: shift.id, status: 'COMPLETED' };
+    const totals = await tx.transactions.aggregate({ where, _sum: { total: true }, _count: { _all: true } });
+    const sales = await tx.transactions.findMany({
+      where,
+      orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
+      select: {
+        payments: { where: { tenant_id: tenantId, status: 'PAID' }, select: { method: true, amount: true } },
+        transaction_items: {
+          where: { tenant_id: tenantId }, orderBy: { id: 'asc' },
+          select: { product_id: true, product_name_snapshot: true, quantity: true, products: { select: { name: true } } },
+        },
+      },
+    });
+    let cash = 0n;
+    let qris = 0n;
+    const products = new Map<string, { product_id: string; product_name: string; quantity: number }>();
+    for (const sale of sales) {
+      for (const payment of sale.payments) {
+        if (payment.method === 'CASH') cash += payment.amount;
+        if (payment.method === 'QRIS') qris += payment.amount;
+      }
+      for (const item of sale.transaction_items) {
+        const name = item.product_name_snapshot ?? item.products?.name ?? 'Unknown product';
+        const existing = products.get(item.product_id);
+        if (existing) {
+          existing.quantity += item.quantity;
+          if (existing.product_name === 'Unknown product' && name !== 'Unknown product') {
+            existing.product_name = name;
+          }
+        } else {
+          products.set(item.product_id, { product_id: item.product_id, product_name: name, quantity: item.quantity });
+        }
+      }
+    }
+    return {
+      shift_id: shift.id, status: shift.status, outlet: shift.outlets, cashier: shift.users,
+      opened_at: shift.opened_at, closed_at: shift.closed_at, generated_at: new Date(),
+      transaction_count: totals._count._all,
+      totals: { sales: this.optionalMoney(totals._sum.total ?? 0n), cash: this.optionalMoney(cash), qris: this.optionalMoney(qris) },
+      products: [...products.values()],
+    };
   }
 
   private async actorContext(
@@ -247,6 +291,7 @@ export class ShiftsService {
     const errors = await validate(dto, {
       whitelist: true,
       forbidNonWhitelisted: true,
+      forbidUnknownValues: false,
     });
     if (errors.length) {
       throw new BadRequestException({
@@ -297,14 +342,6 @@ export class ShiftsService {
     });
   }
 
-  private assertDatabaseMoney(value: bigint): void {
-    if (value < 0n || value > MAX_BIGINT) {
-      throw new InternalServerErrorException(
-        'Shift cash value exceeds database integer range',
-      );
-    }
-  }
-
   private assertSafeMoney(value: bigint): void {
     if (value < MIN_SAFE_INTEGER || value > MAX_SAFE_INTEGER) {
       throw new InternalServerErrorException(
@@ -314,6 +351,11 @@ export class ShiftsService {
   }
 
   private toResponse(shift: ShiftRecord) {
+    const legacy =
+      shift.opening_cash !== null ||
+      shift.closing_cash !== null ||
+      shift.expected_cash !== null ||
+      shift.difference !== null;
     return {
       shift_id: shift.id,
       outlet_id: shift.outlet_id,
@@ -325,6 +367,7 @@ export class ShiftsService {
       status: shift.status,
       opened_at: shift.opened_at,
       closed_at: shift.closed_at,
+      reconciliation_mode: legacy ? 'LEGACY' : 'NONE',
     };
   }
 

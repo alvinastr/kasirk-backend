@@ -1,6 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
-import { IsInt, IsUUID, Max, Min } from 'class-validator';
+import { IsUUID } from 'class-validator';
 
 export class OpenShiftDto {
   @ApiProperty({
@@ -10,15 +9,4 @@ export class OpenShiftDto {
   })
   @IsUUID()
   outlet_id!: string;
-
-  @ApiProperty({
-    type: Number,
-    minimum: 0,
-    description: 'Opening cash amount in smallest currency unit.',
-  })
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  @Max(Number.MAX_SAFE_INTEGER)
-  opening_cash!: number;
 }

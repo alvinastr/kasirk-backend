@@ -106,6 +106,15 @@ test('Shift HTTP API', { skip: !connectionString }, async (t) => {
         role: 'OWNER',
       },
     });
+    const constraintUser = await db.users.create({
+      data: {
+        tenant_id: tenant.id,
+        name: 'Constraint User',
+        email: 'constraint@shift.test',
+        password_hash: 'fixture',
+        role: 'CASHIER',
+      },
+    });
     const product = await db.products.create({
       data: {
         tenant_id: tenant.id,
@@ -134,15 +143,55 @@ test('Shift HTTP API', { skip: !connectionString }, async (t) => {
     const auth = (requestBuilder, accessToken) =>
       requestBuilder.set('Authorization', `Bearer ${accessToken}`);
 
+    await t.test('M6 cashier session CHECK accepts V1/legacy states and rejects partial reconciliation', async () => {
+      await db.cashier_sessions.create({
+        data: {
+          tenant_id: tenant.id,
+          outlet_id: outlet.id,
+          user_id: constraintUser.id,
+          status: 'OPEN',
+        },
+      });
+      await db.cashier_sessions.create({
+        data: {
+          tenant_id: tenant.id,
+          outlet_id: outlet.id,
+          user_id: owner.id,
+          status: 'CLOSED',
+          closed_at: new Date(),
+        },
+      });
+      await db.cashier_sessions.create({
+        data: {
+          tenant_id: tenant.id,
+          outlet_id: outlet.id,
+          user_id: admin.id,
+          status: 'CLOSED',
+          opening_cash: 100,
+          closing_cash: 150,
+          expected_cash: 140,
+          difference: 10,
+          closed_at: new Date(),
+        },
+      });
+      await assert.rejects(
+        db.cashier_sessions.create({
+          data: {
+            tenant_id: tenant.id,
+            outlet_id: outlet.id,
+            user_id: cashier.id,
+            status: 'CLOSED',
+            closing_cash: 150,
+            closed_at: new Date(),
+          },
+        }),
+      );
+    });
+
     await t.test('JWT and DTO validation protect opening a shift', async () => {
-      await http
-        .post('/shifts/open')
-        .send({ outlet_id: outlet.id, opening_cash: 0 })
-        .expect(401);
+      await http.post('/shifts/open').send({ outlet_id: outlet.id }).expect(401);
       await auth(
-        http
-          .post('/shifts/open')
-          .send({ outlet_id: outlet.id, opening_cash: -1 }),
+        http.post('/shifts/open').send({ outlet_id: 'not-a-uuid' }),
         tokens.cashier,
       ).expect(400);
     });
@@ -167,27 +216,27 @@ test('Shift HTTP API', { skip: !connectionString }, async (t) => {
       'OWNER can open and ADMIN can close a tenant shift',
       async () => {
         const opened = await auth(
-          http
-            .post('/shifts/open')
-            .send({ outlet_id: secondOutlet.id, opening_cash: 50 }),
+          http.post('/shifts/open').send({ outlet_id: secondOutlet.id }),
           tokens.owner,
         ).expect(201);
         ownerShiftId = opened.body.shift_id;
         assert.equal(opened.body.user_id, owner.id);
         assert.equal(opened.body.status, 'OPEN');
+        assert.equal(opened.body.opening_cash, null);
 
         await auth(
-          http.post(`/shifts/${ownerShiftId}/close`).send({ closing_cash: 50 }),
+          http.post(`/shifts/${ownerShiftId}/close`).send({}),
           tokens.cashier,
         ).expect(403);
 
         const closed = await auth(
-          http.post(`/shifts/${ownerShiftId}/close`).send({ closing_cash: 50 }),
+          http.post(`/shifts/${ownerShiftId}/close`).send({}),
           tokens.admin,
         ).expect(201);
         assert.equal(closed.body.status, 'CLOSED');
-        assert.equal(closed.body.expected_cash, 50);
-        assert.equal(closed.body.difference, 0);
+        assert.equal(closed.body.closing_cash, null);
+        assert.equal(closed.body.expected_cash, null);
+        assert.equal(closed.body.difference, null);
       },
     );
 
@@ -197,16 +246,16 @@ test('Shift HTTP API', { skip: !connectionString }, async (t) => {
       async () => {
         await auth(http.get('/shifts/current'), tokens.cashier).expect(404);
         const opened = await auth(
-          http
-            .post('/shifts/open')
-            .send({ outlet_id: outlet.id, opening_cash: 100 }),
+          http.post('/shifts/open').send({ outlet_id: outlet.id }),
           tokens.cashier,
         ).expect(201);
         shiftId = opened.body.shift_id;
         assert.equal(opened.body.outlet_id, outlet.id);
         assert.equal(opened.body.user_id, cashier.id);
-        assert.equal(opened.body.opening_cash, 100);
+        assert.equal(opened.body.opening_cash, null);
         assert.equal(opened.body.closing_cash, null);
+        assert.equal(opened.body.expected_cash, null);
+        assert.equal(opened.body.difference, null);
         assert.equal(opened.body.status, 'OPEN');
 
         const current = await auth(
@@ -216,9 +265,7 @@ test('Shift HTTP API', { skip: !connectionString }, async (t) => {
         assert.equal(current.body.shift_id, shiftId);
 
         const duplicate = await auth(
-          http
-            .post('/shifts/open')
-            .send({ outlet_id: outlet.id, opening_cash: 0 }),
+          http.post('/shifts/open').send({ outlet_id: outlet.id }),
           tokens.cashier,
         ).expect(409);
         assert.equal(duplicate.body.error_code, 'SHIFT_ALREADY_OPEN');
@@ -226,18 +273,54 @@ test('Shift HTTP API', { skip: !connectionString }, async (t) => {
     );
 
     await t.test(
-      'only eligible completed CASH sales affect expected cash',
+      'summary includes only linked completed sales and close keeps reconciliation fields null',
       async () => {
         const checkout = await auth(
           http.post('/transactions').send({
             client_transaction_id: randomUUID(),
             outlet_id: outlet.id,
+            cashier_session_id: shiftId,
             items: [{ product_id: product.id, quantity: 2 }],
             payment: { method: 'CASH', amount: 500 },
           }),
           tokens.cashier,
         ).expect(201);
         assert.equal(checkout.body.total, 200);
+
+        const linkedQris = await db.transactions.create({
+          data: {
+            tenant_id: tenant.id,
+            outlet_id: outlet.id,
+            user_id: cashier.id,
+            cashier_session_id: shiftId,
+            client_transaction_id: randomUUID(),
+            status: 'COMPLETED',
+            subtotal: 300,
+            total: 300,
+          },
+        });
+        await db.transaction_items.create({
+          data: {
+            tenant_id: tenant.id,
+            transaction_id: linkedQris.id,
+            product_id: product.id,
+            quantity: 1,
+            unit_price: 300,
+            unit_cost: 50,
+            subtotal: 300,
+            product_name_snapshot: product.name,
+          },
+        });
+        await db.payments.create({
+          data: {
+            tenant_id: tenant.id,
+            transaction_id: linkedQris.id,
+            method: 'QRIS',
+            status: 'PAID',
+            amount: 300,
+            paid_at: new Date(),
+          },
+        });
 
         const createExcludedTransaction = async ({
           status,
@@ -278,31 +361,49 @@ test('Shift HTTP API', { skip: !connectionString }, async (t) => {
           userId: owner.id,
         });
 
+        const summary = await auth(
+          http.get(`/shifts/${shiftId}/summary`),
+          tokens.cashier,
+        ).expect(200);
+        assert.equal(summary.body.transaction_count, 2);
+        assert.equal(summary.body.totals.sales, 500);
+        assert.equal(summary.body.totals.cash, 200);
+        assert.equal(summary.body.totals.qris, 300);
+        assert.deepEqual(summary.body.products, [
+          {
+            product_id: product.id,
+            product_name: 'Shift Product',
+            quantity: 3,
+          },
+        ]);
+
         await auth(
-          http.post(`/shifts/${shiftId}/close`).send({ closing_cash: 350 }),
+          http.post(`/shifts/${shiftId}/close`).send({}),
           tokens.otherOwner,
         ).expect(404);
 
         const closed = await auth(
-          http.post(`/shifts/${shiftId}/close`).send({ closing_cash: 350 }),
+          http.post(`/shifts/${shiftId}/close`).send({}),
           tokens.cashier,
         ).expect(201);
         assert.equal(closed.body.status, 'CLOSED');
-        assert.equal(closed.body.opening_cash, 100);
-        assert.equal(closed.body.closing_cash, 350);
-        assert.equal(closed.body.expected_cash, 300);
-        assert.equal(closed.body.difference, 50);
+        assert.equal(closed.body.opening_cash, null);
+        assert.equal(closed.body.closing_cash, null);
+        assert.equal(closed.body.expected_cash, null);
+        assert.equal(closed.body.difference, null);
         assert.ok(closed.body.closed_at);
 
         const persisted = await db.cashier_sessions.findUnique({
           where: { id: shiftId },
         });
-        assert.equal(persisted.expected_cash, 300n);
-        assert.equal(persisted.difference, 50n);
+        assert.equal(persisted.opening_cash, null);
+        assert.equal(persisted.closing_cash, null);
+        assert.equal(persisted.expected_cash, null);
+        assert.equal(persisted.difference, null);
 
         await auth(http.get('/shifts/current'), tokens.cashier).expect(404);
         const repeat = await auth(
-          http.post(`/shifts/${shiftId}/close`).send({ closing_cash: 350 }),
+          http.post(`/shifts/${shiftId}/close`).send({}),
           tokens.cashier,
         ).expect(409);
         assert.equal(repeat.body.error_code, 'SHIFT_ALREADY_CLOSED');

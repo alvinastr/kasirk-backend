@@ -157,6 +157,15 @@ function service(tx: any) { const prisma: any = { $transaction: jest.fn(async (f
     const { service: s } = service(makeTx()); await expect(s.create(user as any, input({ payment: { method: 'CASH' } }))).rejects.toBeInstanceOf(BadRequestException);
     await expect(s.create({ ...user, tenant_id: 'not-a-uuid' } as any, input())).rejects.toBeInstanceOf(UnauthorizedException);
   });
+  it.each([
+    ['closed or missing session', null, { error_code: 'INVALID_CASHIER_SESSION' }],
+    ['outlet mismatch', { id: id.session, outlet_id: '33333333-3333-4333-8333-333333333334' }, { error_code: 'SESSION_OUTLET_MISMATCH' }],
+  ])('preserves M4 cashier session invariant: %s', async (_case, session, response) => {
+    const tx = makeTx(); tx.cashier_sessions.findFirst.mockResolvedValue(session); const { service: s } = service(tx);
+    await expect(s.create(user as any, input())).rejects.toMatchObject({ response });
+    expect(tx.cashier_sessions.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: id.session, tenant_id: id.tenant, user_id: id.user, status: 'OPEN' } }));
+    expect(tx.transactions.create).not.toHaveBeenCalled();
+  });
   it('rolls back on insufficient stock and does not create movement', async () => {
     const tx = makeTx(); tx.products.findMany.mockResolvedValue([{ id: id.product, name: 'Coffee', sku: 'COF', price: 100, cost: 50, track_stock: true }]); tx.product_stocks.updateMany.mockResolvedValue({ count: 0 });
     const { service: s } = service(tx); await expect(s.create(user as any, input())).rejects.toBeInstanceOf(ConflictException); expect(tx.stock_movements.createMany).not.toHaveBeenCalled();
