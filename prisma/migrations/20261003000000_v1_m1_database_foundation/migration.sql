@@ -112,6 +112,10 @@ CREATE INDEX idx_product_modifier_groups_group_tenant ON product_modifier_groups
 COMMENT ON TABLE product_modifier_groups IS 'V1-M1: Product <-> ModifierGroup association with product-specific selection rules.';
 COMMENT ON COLUMN product_modifier_groups.selection_type IS 'SINGLE or MULTIPLE selection mode for this product-group pair.';
 
+-- Add composite unique constraint required for transaction_item_modifiers FK
+ALTER TABLE transaction_items
+ADD CONSTRAINT uq_transaction_items_id_tenant UNIQUE (id, tenant_id);
+
 -- ============================================================
 -- D. TransactionItemModifier: immutable modifier snapshot
 -- ============================================================
@@ -199,10 +203,6 @@ ADD COLUMN product_name_snapshot VARCHAR(150),
 ADD COLUMN sku_snapshot VARCHAR(100),
 ADD COLUMN base_price_snapshot BIGINT,
 ADD COLUMN effective_price_snapshot BIGINT;
-
--- Add composite unique constraint required for transaction_item_modifiers FK
-ALTER TABLE transaction_items
-ADD CONSTRAINT uq_transaction_items_id_tenant UNIQUE (id, tenant_id);
 
 COMMENT ON COLUMN transaction_items.product_name_snapshot IS 'V1-M1: Immutable product name at transaction time. NULL for legacy rows.';
 COMMENT ON COLUMN transaction_items.sku_snapshot IS 'V1-M1: Immutable product SKU at transaction time. NULL for legacy rows.';
