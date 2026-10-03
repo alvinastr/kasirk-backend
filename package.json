@@ -41,6 +41,7 @@
     "test:pin-login": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/pin-login.integration.cjs",
     "test:device-session": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/device-session.integration.cjs",
     "test:e2e": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --config ./test/jest-e2e.json",
+    "bootstrap:production": "node dist/bootstrap/production-bootstrap.js",
     "postinstall": "prisma skills sync || exit 0"
   },
   "dependencies": {

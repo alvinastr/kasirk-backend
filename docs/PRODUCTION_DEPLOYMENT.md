@@ -105,3 +105,80 @@ These values leave headroom for Docker, OS, swap pressure, and future Caddy.
 ## Graceful shutdown
 
 NestJS shutdown hooks are enabled so Docker `SIGTERM` triggers lifecycle cleanup. `PrismaService` disconnects in `onModuleDestroy()`.
+
+## Production bootstrap (initial business data setup)
+
+**WARNING: One-time setup only. Run once on an EMPTY migrated production database.**
+
+Once migrations are deployed, the production database is empty of business data. Run the bootstrap CLI to create:
+- First tenant with `store_code` for Auth V2
+- First outlet for the tenant
+- First OWNER user with password/PIN login
+
+### Prerequisites
+
+- Production database schema/migrations applied via `npx prisma migrate deploy`
+- No existing `tenants`, `users`, or `outlets` rows
+- `.env.production` file present on VPS with all required secrets
+
+### Execution
+
+Run inside the app container (no public endpoint, CLI-only):
+
+```bash
+docker compose --env-file .env.production run --rm app sh -c "BOOTSTRAP_STORE_CODE='YOUR-CODE' \
+  BOOTSTRAP_TENANT_NAME='Your Tenant Name' \
+  BOOTSTRAP_OUTLET_NAME='Main Outlet' \
+  BOOTSTRAP_OWNER_NAME='Initial Owner' \
+  BOOTSTRAP_OWNER_EMAIL='admin@example.com' \
+  BOOTSTRAP_OWNER_PASSWORD='**REDACTED**' \
+  BOOTSTRAP_OWNER_PIN='123456' \
+  npm run bootstrap:production"
+```
+
+### Safety behaviors
+
+- Refuses if any `tenants`, `users`, or `outlets` rows already exist
+- No upsert/update/delete — only CREATE in a single transaction
+- Uses `Serializable` isolation to prevent concurrent empty-count races
+- Never prints secrets, hashes, or `DATABASE_URL`
+- Exit code `1` on failure/refusal, `0` on success
+
+### Expected success output
+
+```
+Production bootstrap successful:
+  Tenant ID:    <UUID>
+  Store Code:   <STORE_CODE>
+  Outlet ID:    <UUID>
+  OWNER ID:     <UUID>
+  OWNER Email:  <admin@example.com>
+```
+
+### Post-bootstrap verification
+
+1. Test Auth V2 store resolve:
+
+```bash
+curl -fsS -X POST https://api.bekasirk.tech/auth/v2/store/resolve \
+  -H 'Content-Type: application/json' \
+  -d '{"store_code":"YOUR-CODE"}'
+```
+
+2. Test OWNER login (password):
+
+```bash
+curl -fsS -X POST https://api.bekasirk.tech/auth/v2/login/password \
+  -H 'Content-Type: application/json' \
+  -d '{"store_code":"YOUR-CODE","email":"admin@example.com","password":"**REDACTED**"}'
+```
+
+3. Test OWNER login (PIN):
+
+```bash
+curl -fsS -X POST https://api.bekasirk.tech/auth/v2/login/pin \
+  -H 'Content-Type: application/json' \
+  -d '{"store_code":"YOUR-CODE","email":"admin@example.com","pin":"123456"}'
+```
+
+Do not store any secrets in logs, scripts, or version control. Re-run `npm run bootstrap:production` will refuse — business data already exists.
