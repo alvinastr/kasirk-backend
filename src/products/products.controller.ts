@@ -6,6 +6,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -14,6 +15,7 @@ import {
   ApiConflictResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
   ApiParam,
   ApiTags,
@@ -27,6 +29,7 @@ import { CreateProductDto } from './dto/create-product.dto';
 import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { ReplaceProductModifierGroupsDto } from './dto/replace-product-modifier-groups.dto';
 
 @ApiTags('Products')
 @Controller('products')
@@ -83,5 +86,53 @@ export class ProductsController {
     @Body() dto: UpdateProductDto,
   ) {
     return this.productsService.update(user, id, dto);
+  }
+
+  @Get(':product_id/modifier-groups')
+  @ApiOperation({
+    summary: 'Get modifier group assignments for a product',
+    description: 'Retrieve active modifier group assignments and their currently active options for the product. Available to all authenticated roles.',
+  })
+  @ApiParam({
+    name: 'product_id',
+    type: 'string',
+    format: 'uuid',
+    description: 'Product UUID',
+  })
+  @ApiOkResponse({ description: 'Product modifier group assignments' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
+  @ApiForbiddenResponse({ description: 'Tenant mismatch' })
+  @ApiNotFoundResponse({ description: 'Product not found' })
+  getModifierGroups(
+    @CurrentUser() user: JwtPayload,
+    @Param('product_id', new ParseUUIDPipe()) productId: string,
+  ) {
+    return this.productsService.getModifierGroups(user, productId);
+  }
+
+  @Put(':product_id/modifier-groups')
+  @Roles('OWNER', 'ADMIN')
+  @ApiOperation({
+    summary: 'Replace product modifier group assignments',
+    description: 'Atomically replace all modifier group assignments for a product. OWNER and ADMIN roles only.',
+  })
+  @ApiParam({
+    name: 'product_id',
+    type: 'string',
+    format: 'uuid',
+    description: 'Product UUID',
+  })
+  @ApiOkResponse({ description: 'Product modifier groups replaced successfully' })
+  @ApiBadRequestResponse({ description: 'Invalid assignment data' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
+  @ApiForbiddenResponse({ description: 'Insufficient role (OWNER or ADMIN required)' })
+  @ApiNotFoundResponse({ description: 'Product or modifier group not found' })
+  @ApiConflictResponse({ description: 'Duplicate modifier group assignment' })
+  replaceModifierGroups(
+    @CurrentUser() user: JwtPayload,
+    @Param('product_id', new ParseUUIDPipe()) productId: string,
+    @Body() dto: ReplaceProductModifierGroupsDto,
+  ) {
+    return this.productsService.replaceModifierGroups(user, productId, dto);
   }
 }

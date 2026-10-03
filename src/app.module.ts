@@ -16,6 +16,7 @@ import { CustomersModule } from './customers/customers.module';
 import { ReceiptsModule } from './receipts/receipts.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { SyncModule } from './sync/sync.module';
+import { ModifierGroupsModule } from './modifier-groups/modifier-groups.module';
 
 @Module({
   imports: [
@@ -48,6 +49,8 @@ import { SyncModule } from './sync/sync.module';
     ShiftsModule,
 
     SyncModule,
+
+    ModifierGroupsModule,
   ],
   controllers: [
     AppController,
