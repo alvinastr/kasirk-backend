@@ -35,21 +35,23 @@ model customers {
 }
 
 /// This table contains check constraints and a partial unique index that Prisma cannot represent directly.
+/// V1-M1: opening_cash is now nullable for non-reconciling shifts. Legacy rows retain their values.
 model cashier_sessions {
-  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id     String    @db.Uuid
-  outlet_id     String    @db.Uuid
-  user_id       String    @db.Uuid
-  opening_cash  BigInt
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id     String         @db.Uuid
+  outlet_id     String         @db.Uuid
+  user_id       String         @db.Uuid
+  opening_cash  BigInt?
   closing_cash  BigInt?
   expected_cash BigInt?
   difference    BigInt?
-  status        String    @default("OPEN") @db.VarChar(20)
-  opened_at     DateTime  @default(now()) @db.Timestamptz(6)
-  closed_at     DateTime? @db.Timestamptz(6)
-  outlets       outlets   @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_outlet_same_tenant")
-  tenants       tenants   @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_tenant")
-  users         users     @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_user_same_tenant")
+  status        String         @default("OPEN") @db.VarChar(20)
+  opened_at     DateTime       @default(now()) @db.Timestamptz(6)
+  closed_at     DateTime?      @db.Timestamptz(6)
+  outlets       outlets        @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_outlet_same_tenant")
+  tenants       tenants        @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_tenant")
+  users         users          @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_user_same_tenant")
+  transactions  transactions[]
 
   @@unique([id, tenant_id], map: "uq_cashier_sessions_id_tenant")
   @@index([tenant_id], map: "idx_cashier_sessions_tenant_id")
@@ -121,6 +123,9 @@ model outlets {
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// V1-M1: added nullable amount_received and change_amount for CASH semantics.
+/// Legacy rows remain valid with both fields NULL. Payment.amount semantics
+/// are unchanged (settled transaction amount).
 model payments {
   id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenant_id          String       @db.Uuid
@@ -128,13 +133,15 @@ model payments {
   method             String       @db.VarChar(20)
   status             String       @default("PENDING") @db.VarChar(20)
   amount             BigInt
+  amount_received    BigInt?
+  change_amount      BigInt?
   provider           String?      @db.VarChar(50)
   provider_reference String?      @db.VarChar(255)
   paid_at            DateTime?    @db.Timestamptz(6)
   created_at         DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
   transactions       transactions @relation(fields: [transaction_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_payments_transaction_same_tenant")
   tenants            tenants      @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_payments_tenant")
-  updated_at         DateTime     @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@index([transaction_id], map: "idx_payments_transaction_id")
   @@index([tenant_id, status], map: "idx_payments_tenant_status")
@@ -154,25 +161,111 @@ model product_stocks {
   @@index([product_id], map: "idx_product_stocks_product_id")
 }
 
+/// V1-M1: tenant-owned reusable modifier group. Selection rules live on the
+/// product association, not the group. Contains a CHECK constraint for the
+/// selection type that Prisma cannot represent directly.
+model modifier_groups {
+  id             String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id      String                    @db.Uuid
+  name           String                    @db.VarChar(150)
+  is_active      Boolean                   @default(true)
+  display_order  Int                       @default(0)
+  created_at     DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime                  @default(now()) @updatedAt @db.Timestamptz(6)
+  tenants        tenants                   @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_modifier_groups_tenant")
+  options        modifier_options[]
+  product_groups product_modifier_groups[]
+
+  @@unique([tenant_id, name], map: "uq_modifier_groups_tenant_name")
+  @@unique([id, tenant_id], map: "uq_modifier_groups_id_tenant")
+  @@index([tenant_id], map: "idx_modifier_groups_tenant_id")
+}
+
+/// V1-M1: tenant-owned modifier option. price_delta is integer Rupiah and must
+/// be non-negative (CHECK constraint added in the migration).
+model modifier_options {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id         String          @db.Uuid
+  modifier_group_id String          @db.Uuid
+  name              String          @db.VarChar(150)
+  price_delta       Int
+  is_active         Boolean         @default(true)
+  display_order     Int             @default(0)
+  created_at        DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+  modifier_groups   modifier_groups @relation(fields: [modifier_group_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_modifier_options_modifier_group_same_tenant")
+  tenants           tenants         @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_modifier_options_tenant")
+
+  @@unique([tenant_id, modifier_group_id, name], map: "uq_modifier_options_tenant_group_name")
+  @@index([tenant_id], map: "idx_modifier_options_tenant_id")
+  @@index([modifier_group_id, tenant_id], map: "idx_modifier_options_group_tenant")
+}
+
+/// V1-M1: explicit Product <-> ModifierGroup association carrying product-specific
+/// selection rules. Composite tenant-safe foreign keys prevent cross-tenant links.
+/// Contains a CHECK constraint for selection_type that Prisma cannot represent directly.
+model product_modifier_groups {
+  tenant_id         String          @db.Uuid
+  product_id        String          @db.Uuid
+  modifier_group_id String          @db.Uuid
+  required          Boolean         @default(false)
+  selection_type    String          @db.VarChar(20)
+  display_order     Int             @default(0)
+  created_at        DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+  modifier_groups   modifier_groups @relation(fields: [modifier_group_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_product_modifier_groups_group_same_tenant")
+  products          products        @relation(fields: [product_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_product_modifier_groups_product_same_tenant")
+  tenants           tenants         @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_product_modifier_groups_tenant")
+
+  @@id([tenant_id, product_id, modifier_group_id])
+  @@index([tenant_id], map: "idx_product_modifier_groups_tenant_id")
+  @@index([product_id, tenant_id], map: "idx_product_modifier_groups_product_tenant")
+  @@index([modifier_group_id, tenant_id], map: "idx_product_modifier_groups_group_tenant")
+}
+
+/// V1-M1: immutable transaction item modifier snapshot. Snapshot names and price
+/// delta are authoritative historical data; master IDs are nullable provenance
+/// only and must never be required for receipt correctness. Contains a CHECK
+/// constraint for the non-negative price delta that Prisma cannot represent directly.
+model transaction_item_modifiers {
+  id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id            String            @db.Uuid
+  transaction_id       String            @db.Uuid
+  transaction_item_id  String            @db.Uuid
+  modifier_group_id    String?           @db.Uuid
+  modifier_option_id   String?           @db.Uuid
+  group_name_snapshot  String            @db.VarChar(150)
+  option_name_snapshot String            @db.VarChar(150)
+  price_delta_snapshot Int
+  created_at           DateTime          @default(now()) @db.Timestamptz(6)
+  transaction_items    transaction_items @relation(fields: [transaction_item_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_transaction_item_modifiers_item_same_tenant")
+  transactions         transactions      @relation(fields: [transaction_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_transaction_item_modifiers_transaction_same_tenant")
+  tenants              tenants           @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transaction_item_modifiers_tenant")
+
+  @@index([tenant_id, transaction_id], map: "idx_transaction_item_modifiers_tenant_transaction")
+  @@index([tenant_id, transaction_item_id], map: "idx_transaction_item_modifiers_tenant_item")
+}
+
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model products {
-  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id         String              @db.Uuid
-  category_id       String?             @db.Uuid
-  name              String              @db.VarChar(150)
-  sku               String              @db.VarChar(100)
-  price             Int                 @default(0)
-  cost              Int                 @default(0)
-  minimum_stock     Int                 @default(0)
-  track_stock       Boolean             @default(true)
-  is_active         Boolean             @default(true)
-  created_at        DateTime            @default(now()) @db.Timestamptz(6)
-  product_stocks    product_stocks[]
-  categories        categories?         @relation(fields: [category_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_products_category")
-  tenants           tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_products_tenant")
-  stock_adjustments stock_adjustments[]
-  stock_movements   stock_movements[]
-  transaction_items transaction_items[]
+  id                      String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id               String                    @db.Uuid
+  category_id             String?                   @db.Uuid
+  name                    String                    @db.VarChar(150)
+  sku                     String                    @db.VarChar(100)
+  price                   Int                       @default(0)
+  cost                    Int                       @default(0)
+  minimum_stock           Int                       @default(0)
+  track_stock             Boolean                   @default(true)
+  is_active               Boolean                   @default(true)
+  created_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  product_stocks          product_stocks[]
+  categories              categories?               @relation(fields: [category_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_products_category")
+  tenants                 tenants                   @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_products_tenant")
+  stock_adjustments       stock_adjustments[]
+  stock_movements         stock_movements[]
+  transaction_items       transaction_items[]
+  product_modifier_groups product_modifier_groups[]
 
   @@unique([tenant_id, sku], map: "uq_products_tenant_sku")
   @@unique([id, tenant_id], map: "uq_products_id_tenant")
@@ -222,45 +315,57 @@ model stock_movements {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model tenants {
-  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  store_code        String?             @unique(map: "uq_tenants_store_code") @db.VarChar(32)
-  name              String              @db.VarChar(100)
-  address           String?
-  tax_enabled       Boolean             @default(false)
-  tax_included      Boolean             @default(false)
-  tax_rate          Decimal             @default(0) @db.Decimal(5, 2)
-  is_active         Boolean             @default(true)
-  created_at        DateTime            @default(now()) @db.Timestamptz(6)
-  categories        categories[]
-  customers         customers[]
-  outlets           outlets[]
-  products          products[]
-  stock_adjustments stock_adjustments[]
-  stock_movements   stock_movements[]
-  transactions      transactions[]
-  users             users[]
-  transaction_items transaction_items[]
-  payments          payments[]
-  cashier_sessions  cashier_sessions[]
-  device_sessions   device_sessions[]
-  auth_audit_logs   auth_audit_logs[]
+  id                         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  store_code                 String?                      @unique(map: "uq_tenants_store_code") @db.VarChar(32)
+  name                       String                       @db.VarChar(100)
+  address                    String?
+  tax_enabled                Boolean                      @default(false)
+  tax_included               Boolean                      @default(false)
+  tax_rate                   Decimal                      @default(0) @db.Decimal(5, 2)
+  is_active                  Boolean                      @default(true)
+  created_at                 DateTime                     @default(now()) @db.Timestamptz(6)
+  categories                 categories[]
+  customers                  customers[]
+  outlets                    outlets[]
+  products                   products[]
+  stock_adjustments          stock_adjustments[]
+  stock_movements            stock_movements[]
+  transactions               transactions[]
+  users                      users[]
+  transaction_items          transaction_items[]
+  payments                   payments[]
+  cashier_sessions           cashier_sessions[]
+  device_sessions            device_sessions[]
+  auth_audit_logs            auth_audit_logs[]
+  modifier_groups            modifier_groups[]
+  modifier_options           modifier_options[]
+  product_modifier_groups    product_modifier_groups[]
+  transaction_item_modifiers transaction_item_modifiers[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// V1-M1: added snapshot fields to preserve historical product identity and
+/// pricing at transaction time. Legacy rows have NULL for new fields.
 model transaction_items {
-  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id      String       @db.Uuid
-  transaction_id String       @db.Uuid
-  product_id     String       @db.Uuid
-  quantity       Int
-  unit_price     BigInt
-  unit_cost      BigInt
-  subtotal       BigInt
-  products       products     @relation(fields: [product_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transaction_items_product_same_tenant")
-  transactions   transactions @relation(fields: [transaction_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_transaction_items_transaction_same_tenant")
-  tenants        tenants      @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transaction_items_tenant")
-  created_at     DateTime     @default(now()) @db.Timestamptz(6)
+  id                         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id                  String                       @db.Uuid
+  transaction_id             String                       @db.Uuid
+  product_id                 String                       @db.Uuid
+  quantity                   Int
+  unit_price                 BigInt
+  unit_cost                  BigInt
+  subtotal                   BigInt
+  product_name_snapshot      String?                      @db.VarChar(150)
+  sku_snapshot               String?                      @db.VarChar(100)
+  base_price_snapshot        BigInt?
+  effective_price_snapshot   BigInt?
+  created_at                 DateTime                     @default(now()) @db.Timestamptz(6)
+  products                   products                     @relation(fields: [product_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transaction_items_product_same_tenant")
+  transactions               transactions                 @relation(fields: [transaction_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_transaction_items_transaction_same_tenant")
+  tenants                    tenants                      @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transaction_items_tenant")
+  transaction_item_modifiers transaction_item_modifiers[]
 
+  @@unique([id, tenant_id], map: "uq_transaction_items_id_tenant")
   @@index([product_id], map: "idx_transaction_items_product_id")
   @@index([transaction_id], map: "idx_transaction_items_transaction_id")
   @@index([tenant_id, transaction_id], map: "idx_transaction_items_tenant_transaction")
@@ -268,25 +373,28 @@ model transaction_items {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model transactions {
-  id                    String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  tenant_id             String              @db.Uuid
-  outlet_id             String              @db.Uuid
-  user_id               String              @db.Uuid
-  customer_id           String?             @db.Uuid
-  client_transaction_id String              @db.Uuid
-  status                String              @default("PENDING") @db.VarChar(20)
-  subtotal              BigInt              @default(0)
-  discount              BigInt              @default(0)
-  tax                   BigInt              @default(0)
-  total                 BigInt              @default(0)
-  created_at            DateTime            @default(now()) @db.Timestamptz(6)
-  updated_at            DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
-  payments              payments[]
-  transaction_items     transaction_items[]
-  customers             customers?          @relation(fields: [customer_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transactions_customer_same_tenant")
-  outlets               outlets             @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transactions_outlet_same_tenant")
-  tenants               tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_transactions_tenant")
-  users                 users               @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transactions_user_same_tenant")
+  id                         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id                  String                       @db.Uuid
+  outlet_id                  String                       @db.Uuid
+  user_id                    String                       @db.Uuid
+  customer_id                String?                      @db.Uuid
+  cashier_session_id         String?                      @db.Uuid
+  client_transaction_id      String                       @db.Uuid
+  status                     String                       @default("PENDING") @db.VarChar(20)
+  subtotal                   BigInt                       @default(0)
+  discount                   BigInt                       @default(0)
+  tax                        BigInt                       @default(0)
+  total                      BigInt                       @default(0)
+  created_at                 DateTime                     @default(now()) @db.Timestamptz(6)
+  updated_at                 DateTime                     @default(now()) @updatedAt @db.Timestamptz(6)
+  payments                   payments[]
+  transaction_items          transaction_items[]
+  transaction_item_modifiers transaction_item_modifiers[]
+  cashier_sessions           cashier_sessions?            @relation(fields: [cashier_session_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transactions_cashier_session_same_tenant")
+  customers                  customers?                   @relation(fields: [customer_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transactions_customer_same_tenant")
+  outlets                    outlets                      @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transactions_outlet_same_tenant")
+  tenants                    tenants                      @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_transactions_tenant")
+  users                      users                        @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transactions_user_same_tenant")
 
   @@unique([tenant_id, client_transaction_id], map: "uq_transactions_client_id")
   @@unique([id, tenant_id], map: "uq_transactions_id_tenant")
@@ -294,6 +402,7 @@ model transactions {
   @@index([outlet_id], map: "idx_transactions_outlet_id")
   @@index([tenant_id], map: "idx_transactions_tenant_id")
   @@index([user_id], map: "idx_transactions_user_id")
+  @@index([tenant_id, cashier_session_id], map: "idx_transactions_tenant_cashier_session")
   @@index([tenant_id, created_at], map: "idx_transactions_tenant_created_at")
   @@index([tenant_id, status], map: "idx_transactions_tenant_status")
   @@index([tenant_id, customer_id, created_at], map: "idx_transactions_tenant_customer_created_at")

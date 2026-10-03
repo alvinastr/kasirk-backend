@@ -168,7 +168,7 @@ export class ShiftsService {
         },
         _sum: { total: true },
       });
-      const expectedCash = shift.opening_cash + (cashSales._sum.total ?? 0n);
+      const expectedCash = (shift.opening_cash ?? 0n) + (cashSales._sum.total ?? 0n);
       const closingCash = BigInt(dto.closing_cash);
       const difference = closingCash - expectedCash;
       this.assertDatabaseMoney(expectedCash);
