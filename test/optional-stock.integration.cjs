@@ -90,9 +90,18 @@ test(
           minimum_stock: 0,
           ...(trackStock === undefined ? {} : { track_stock: trackStock }),
         });
+      const ownerSession = await db.cashier_sessions.create({
+        data: {
+          tenant_id: tenant.id,
+          outlet_id: outlet.id,
+          user_id: owner.id,
+          status: 'OPEN',
+        },
+      });
       const transaction = (items, clientTransactionId = randomUUID()) => ({
         client_transaction_id: clientTransactionId,
         outlet_id: outlet.id,
+        cashier_session_id: ownerSession.id,
         items,
         payment: {
           method: 'CASH',
@@ -270,6 +279,7 @@ test(
             { product_id: tracked.id, quantity: 1 },
             { product_id: untracked.id, quantity: 3 },
           ]);
+          delete body.cashier_session_id; // Exact RC2 replay, not normal POST.
           const first = await auth(http.post('/sync/transactions'))
             .send({ transactions: [body] })
             .expect(201);

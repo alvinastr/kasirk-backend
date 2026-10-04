@@ -21,7 +21,7 @@ test('Transaction CASH checkout', { skip: !process.env.TRANSACTION_TEST_DATABASE
     try {
         await admin.query(`CREATE SCHEMA "${schema}"`);
         await admin.query(`SET search_path TO "${schema}"`);
-        for (const name of ['20260914000000_baseline','20260914000100_transaction_tenant_integrity','20260915000000_optional_tenant_tax','20260915010000_add_customers','20260915020000_add_cashier_sessions','20260918000000_add_product_track_stock','20260926000000_auth_v2_schema_preparation','20260926010000_add_device_session_refresh_hash_unique']) {
+        for (const name of ['20260914000000_baseline','20260914000100_transaction_tenant_integrity','20260915000000_optional_tenant_tax','20260915010000_add_customers','20260915020000_add_cashier_sessions','20260918000000_add_product_track_stock','20260926000000_auth_v2_schema_preparation','20260926010000_add_device_session_refresh_hash_unique','20261003000000_v1_m1_database_foundation','20261003010000_v1_m4_transaction_item_note_snapshot','20261003020000_v1_m6_non_reconciling_shift_close']) {
             await admin.query(readFileSync(join(__dirname,'../prisma/migrations',name,'migration.sql'),'utf8').replaceAll('"public"',`"${schema}"`));
         }
         db = new PrismaClient({ adapter: new PrismaPg({ connectionString }, { schema }) });

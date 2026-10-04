@@ -1,26 +1,33 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
   IsObject,
-  ValidateNested,
 } from 'class-validator';
-import { CreateTransactionDto } from '../../transactions/dto/create-transaction.dto';
+
+export type SyncTransactionInput = Record<string, unknown>;
+export type SyncTransactionKind = 'LEGACY_SYNC' | 'V1';
 
 export class SyncTransactionsDto {
-  @ApiProperty({
-    type: () => [CreateTransactionDto],
-    minItems: 1,
-    maxItems: 100,
-    description: 'Array of transactions to sync.',
-  })
+  @ApiProperty({ type: 'array', minItems: 1, maxItems: 100 })
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(100)
   @IsObject({ each: true })
-  @ValidateNested({ each: true })
-  @Type(() => CreateTransactionDto)
-  transactions!: CreateTransactionDto[];
+  transactions!: SyncTransactionInput[];
+}
+
+/**
+ * Presence of the V1 discriminator selects strict V1 validation. Its value is
+ * intentionally not inspected here, so malformed V1 cannot fall back to RC2.
+ * Rows without the discriminator are accepted only if the narrow legacy DTO
+ * validation succeeds.
+ */
+export function classifySyncTransaction(
+  input: SyncTransactionInput,
+): SyncTransactionKind {
+  return Object.prototype.hasOwnProperty.call(input, 'cashier_session_id')
+    ? 'V1'
+    : 'LEGACY_SYNC';
 }

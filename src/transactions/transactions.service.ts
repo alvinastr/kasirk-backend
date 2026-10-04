@@ -16,7 +16,11 @@ import { isUUID, validate } from 'class-validator';
 import type { JwtPayload } from '../auth/types/jwt-payload.type';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
+import { LegacySyncTransactionDto } from '../sync/dto/legacy-sync-transaction.dto';
 import { QueryTransactionsDto } from './dto/query-transactions.dto';
+
+type CheckoutMode = 'V1' | 'LEGACY_SYNC';
+type CheckoutDto = Omit<CreateTransactionDto, 'cashier_session_id'> & { cashier_session_id: string | null };
 import { PaymentMethod, PaymentStatus, TransactionStatus } from './types/transaction.types';
 
 const summarySelect = {
@@ -104,15 +108,31 @@ export class TransactionsService {
     constructor(private readonly prisma: PrismaService) {}
 
     async create(user: JwtPayload, input: CreateTransactionDto) {
+        return this.createInternal(user, input, 'V1');
+    }
+
+    /** Trusted sync-only entry point; never exposed by a controller. */
+    async createLegacySync(user: JwtPayload, input: LegacySyncTransactionDto) {
+        if (!input || typeof input !== 'object') throw new BadRequestException('Invalid legacy sync input');
+        const dto = plainToInstance(LegacySyncTransactionDto, input);
+        if ((await validate(dto, { whitelist: true, forbidNonWhitelisted: true })).length) {
+            throw new BadRequestException({ message: 'Invalid legacy sync transaction', error_code: 'INVALID_INPUT' });
+        }
+        return this.createInternal(user, { ...dto, discount: 0, cashier_session_id: null }, 'LEGACY_SYNC');
+    }
+
+    private async createInternal(user: JwtPayload, input: CheckoutDto, mode: CheckoutMode) {
         if (!user || !isUUID(user.sub) || !isUUID(user.tenant_id)) {
             throw new UnauthorizedException('Invalid user context');
         }
         // Keep validation for callers that invoke the service outside HTTP.
-        const dto = plainToInstance(CreateTransactionDto, input);
+        const dto = plainToInstance(CreateTransactionDto, input) as CheckoutDto;
         if (!dto) {
             throw new BadRequestException({ message: 'Invalid transaction input', error_code: 'INVALID_INPUT' });
         }
-        const validationErrors = await validate(dto, { whitelist: true, forbidNonWhitelisted: true });
+        const validationErrors = mode === 'V1'
+            ? await validate(dto, { whitelist: true, forbidNonWhitelisted: true })
+            : [];
         if (validationErrors.length) {
             const payment = dto.payment as unknown;
             if (payment !== null && typeof payment === 'object' && !Array.isArray(payment)) {
@@ -129,7 +149,7 @@ export class TransactionsService {
         dto.outlet_id = dto.outlet_id.toLowerCase();
         dto.customer_id = dto.customer_id?.toLowerCase();
         dto.client_transaction_id = dto.client_transaction_id.toLowerCase();
-        dto.cashier_session_id = dto.cashier_session_id.toLowerCase();
+        dto.cashier_session_id = mode === 'V1' ? dto.cashier_session_id!.toLowerCase() : null;
         // Preserve original line order; do not sort by product_id so duplicate
         // product lines with different modifiers/notes remain distinct.
         dto.items = dto.items.map((item) => ({
@@ -142,7 +162,7 @@ export class TransactionsService {
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
                 return await this.prisma.$transaction(
-                    (tx) => this.checkout(tx, actorContext, dto),
+                    (tx) => this.checkout(tx, actorContext, dto, mode),
                     { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
                 );
             } catch (error) {
@@ -262,7 +282,7 @@ export class TransactionsService {
         return { tenant_id, ...(outlet_id ? { outlet_id } : {}) };
     }
 
-    private async checkout(tx: Prisma.TransactionClient, user: JwtPayload, dto: CreateTransactionDto) {
+    private async checkout(tx: Prisma.TransactionClient, user: JwtPayload, dto: CheckoutDto, mode: CheckoutMode) {
         const actor = await tx.users.findFirst({
             where: { id: user.sub, tenant_id: user.tenant_id, is_active: true },
             select: { outlet_id: true, role: true },
@@ -287,27 +307,29 @@ export class TransactionsService {
             return this.toResponse(existing);
         }
 
-        // V1-M4: validate the explicitly supplied cashier session for ALL roles.
-        const session = await tx.cashier_sessions.findFirst({
-            where: {
-                id: dto.cashier_session_id,
-                tenant_id: user.tenant_id,
-                user_id: user.sub,
-                status: 'OPEN',
-            },
-            select: { id: true, outlet_id: true },
-        });
-        if (!session) {
-            throw new ForbiddenException({
-                message: 'Cashier session not found, not open, or does not belong to this actor',
-                error_code: 'INVALID_CASHIER_SESSION',
+        if (mode === 'V1') {
+            // V1-M4: validate the explicitly supplied cashier session for ALL roles.
+            const session = await tx.cashier_sessions.findFirst({
+                where: {
+                    id: dto.cashier_session_id!,
+                    tenant_id: user.tenant_id,
+                    user_id: user.sub,
+                    status: 'OPEN',
+                },
+                select: { id: true, outlet_id: true },
             });
-        }
-        if (session.outlet_id !== dto.outlet_id) {
-            throw new ForbiddenException({
-                message: 'Cashier session outlet does not match transaction outlet',
-                error_code: 'SESSION_OUTLET_MISMATCH',
-            });
+            if (!session) {
+                throw new ForbiddenException({
+                    message: 'Cashier session not found, not open, or does not belong to this actor',
+                    error_code: 'INVALID_CASHIER_SESSION',
+                });
+            }
+            if (session.outlet_id !== dto.outlet_id) {
+                throw new ForbiddenException({
+                    message: 'Cashier session outlet does not match transaction outlet',
+                    error_code: 'SESSION_OUTLET_MISMATCH',
+                });
+            }
         }
 
         const outlet = await tx.outlets.findFirst({
@@ -499,7 +521,7 @@ export class TransactionsService {
             throw new BadRequestException({ message: 'Cash amount received is less than total', error_code: 'CASH_UNDERPAYMENT' });
         }
 
-        // Persist transaction header with cashier_session_id.
+        // Legacy mode persists an intentional NULL, never a current shift.
         const transaction = await tx.transactions.create({
             data: {
                 tenant_id: user.tenant_id,
@@ -622,7 +644,7 @@ export class TransactionsService {
         return this.toResponse(completed);
     }
 
-    private assertSameRequest(existing: TransactionRecord, user: JwtPayload, dto: CreateTransactionDto) {
+    private assertSameRequest(existing: TransactionRecord, user: JwtPayload, dto: CheckoutDto) {
         const payment = existing.payments[0];
         // Item order and modifier-option order have no semantic meaning. Preserve
         // duplicate-line multiplicity by comparing sorted canonical line keys.
@@ -663,7 +685,7 @@ export class TransactionsService {
         return BigInt((payment.amount_received ?? payment.amount)!);
     }
 
-    private samePayment(payment: TransactionRecord['payments'][number] | undefined, dto: CreateTransactionDto): boolean {
+    private samePayment(payment: TransactionRecord['payments'][number] | undefined, dto: CheckoutDto): boolean {
         if (!payment || payment.method !== dto.payment.method) return false;
         if (dto.payment.method === PaymentMethod.CASH) {
             const requestedTender = this.resolveTender(dto.payment);
@@ -690,7 +712,7 @@ export class TransactionsService {
      * - CASH: exactly one of legacy amount or V1 amount_received.
      * - QRIS: no cash fields.
      */
-    private assertPaymentShape(dto: CreateTransactionDto) {
+    private assertPaymentShape(dto: CheckoutDto) {
         const p = dto.payment;
         if ('change_amount' in (p as unknown as Record<string, unknown>)) {
             throw new BadRequestException({

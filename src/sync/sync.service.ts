@@ -11,7 +11,9 @@ import { isUUID, validate } from 'class-validator';
 import type { JwtPayload } from '../auth/types/jwt-payload.type';
 import { PrismaService } from '../prisma/prisma.service';
 import { TransactionsService } from '../transactions/transactions.service';
-import { SyncTransactionsDto } from './dto/sync-transactions.dto';
+import { CreateTransactionDto } from '../transactions/dto/create-transaction.dto';
+import { LegacySyncTransactionDto } from './dto/legacy-sync-transaction.dto';
+import { classifySyncTransaction, SyncTransactionsDto } from './dto/sync-transactions.dto';
 
 type ErrorBody = {
   error_code?: unknown;
@@ -36,7 +38,10 @@ export class SyncService {
     // while one failed offline record does not prevent later records syncing.
     for (const transaction of dto.transactions) {
       try {
-        const result = await this.transactionsService.create(user, transaction);
+        const kind = classifySyncTransaction(transaction);
+        const result = kind === 'LEGACY_SYNC'
+          ? await this.transactionsService.createLegacySync(user, transaction as unknown as LegacySyncTransactionDto)
+          : await this.transactionsService.create(user, transaction as unknown as CreateTransactionDto);
         results.push({
           client_transaction_id: transaction.client_transaction_id,
           status: 'SYNCED',
@@ -94,33 +99,21 @@ export class SyncService {
           return;
         }
         if (!actor.outlet_id) {
-          throw this.shiftRequired();
+          throw this.outletRequired();
         }
 
-        const shift = await tx.cashier_sessions.findFirst({
-          where: {
-            tenant_id: tenantId,
-            user_id: userId,
-            status: 'OPEN',
-          },
-          select: { outlet_id: true },
-        });
-        if (!shift) {
-          throw this.shiftRequired();
-        }
 
         const requestedOutlets = new Set(
           dto.transactions.map((transaction) =>
-            transaction.outlet_id.toLowerCase(),
+            (transaction.outlet_id as string).toLowerCase(),
           ),
         );
         if (
           requestedOutlets.size !== 1 ||
-          !requestedOutlets.has(actor.outlet_id) ||
-          shift.outlet_id !== actor.outlet_id
+          !requestedOutlets.has(actor.outlet_id)
         ) {
           throw new ForbiddenException({
-            message: 'Sync outlet does not match the cashier open shift',
+            message: 'Sync outlet does not match the cashier assigned outlet',
             error_code: 'SHIFT_OUTLET_MISMATCH',
           });
         }
@@ -141,13 +134,21 @@ export class SyncService {
         error_code: 'INVALID_INPUT',
       });
     }
+    for (const row of dto.transactions) {
+      const rowDto = Object.prototype.hasOwnProperty.call(row, 'cashier_session_id')
+        ? plainToInstance(CreateTransactionDto, row)
+        : plainToInstance(LegacySyncTransactionDto, row);
+      if ((await validate(rowDto, { whitelist: true, forbidNonWhitelisted: true })).length) {
+        throw new BadRequestException({ message: 'Invalid transaction sync input', error_code: 'INVALID_INPUT' });
+      }
+    }
     return dto;
   }
 
-  private shiftRequired() {
+  private outletRequired() {
     return new ForbiddenException({
-      message: 'Cashier must have an open shift before syncing transactions',
-      error_code: 'OPEN_SHIFT_REQUIRED',
+      message: 'Cashier must have an assigned outlet before syncing transactions',
+      error_code: 'OUTLET_ACCESS_DENIED',
     });
   }
 
