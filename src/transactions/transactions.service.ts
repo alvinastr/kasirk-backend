@@ -217,7 +217,21 @@ export class TransactionsService {
                 select: responseSelect,
             });
             if (!transaction) throw new NotFoundException('Transaction not found');
-            return this.toResponse(transaction);
+            // Legacy rows have NULL snapshots. One bounded, tenant-scoped lookup
+            // supplies readable names without an N+1 loop or a product join on
+            // every read, including V1-only detail requests.
+            const legacyProductIds = [...new Set(
+                transaction.transaction_items
+                    .filter((item) => item.product_name_snapshot === null)
+                    .map((item) => item.product_id),
+            )];
+            const legacyProducts = legacyProductIds.length
+                ? await tx.products.findMany({
+                    where: { tenant_id: user.tenant_id.toLowerCase(), id: { in: legacyProductIds } },
+                    select: { id: true, name: true, sku: true },
+                })
+                : [];
+            return this.toResponse(transaction, new Map(legacyProducts.map((p) => [p.id, p])));
         }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
     }
 
@@ -735,13 +749,23 @@ export class TransactionsService {
         };
     }
 
-    private toResponse(transaction: TransactionRecord) {
+    private toResponse(
+        transaction: TransactionRecord,
+        legacyProducts: Map<string, { id: string; name: string; sku: string }> = new Map(),
+    ) {
         const payment = transaction.payments.length === 1 ? transaction.payments[0] : undefined;
         const change = payment?.change_amount != null ? this.money(payment.change_amount) : null;
         return {
             ...this.toSummary(transaction),
             cashier_session_id: transaction.cashier_session_id,
-            items: transaction.transaction_items.map((item) => ({
+            items: transaction.transaction_items.map((item) => {
+                // Snapshots stay authoritative. Display fields resolve NULL
+                // legacy snapshots from the bounded product lookup, and legacy
+                // rows reuse their historical unit_price because master price is
+                // mutable current state, not the price actually sold.
+                const isV1Snapshot = item.product_name_snapshot !== null;
+                const legacyProduct = legacyProducts.get(item.product_id);
+                return {
                 id: item.id,
                 product_id: item.product_id,
                 quantity: item.quantity,
@@ -753,6 +777,15 @@ export class TransactionsService {
                 base_price_snapshot: item.base_price_snapshot != null ? this.money(item.base_price_snapshot) : null,
                 effective_price_snapshot: item.effective_price_snapshot != null ? this.money(item.effective_price_snapshot) : null,
                 note_snapshot: item.note_snapshot,
+                product_name: isV1Snapshot ? item.product_name_snapshot : legacyProduct?.name ?? null,
+                sku: isV1Snapshot ? item.sku_snapshot : legacyProduct?.sku ?? null,
+                base_price: isV1Snapshot
+                    ? (item.base_price_snapshot != null ? this.money(item.base_price_snapshot) : null)
+                    : this.money(item.unit_price),
+                effective_price: isV1Snapshot
+                    ? (item.effective_price_snapshot != null ? this.money(item.effective_price_snapshot) : null)
+                    : this.money(item.unit_price),
+                note: item.note_snapshot,
                 modifiers: (item.transaction_item_modifiers ?? []).map((m) => ({
                     id: m.id,
                     modifier_group_id: m.modifier_group_id,
@@ -761,7 +794,8 @@ export class TransactionsService {
                     option_name_snapshot: m.option_name_snapshot,
                     price_delta_snapshot: m.price_delta_snapshot,
                 })),
-            })),
+                };
+            }),
             payments: transaction.payments.map((p) => ({
                 ...p,
                 amount: this.money(p.amount),

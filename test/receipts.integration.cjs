@@ -137,7 +137,7 @@ test('Receipt HTTP API', { skip: !connectionString }, async (t) => {
     await db.product_stocks.create({
       data: { outlet_id: outlet.id, product_id: product.id, stock: 10 },
     });
-    await db.cashier_sessions.create({
+    const session = await db.cashier_sessions.create({
       data: {
         tenant_id: tenant.id,
         outlet_id: outlet.id,
@@ -166,6 +166,7 @@ test('Receipt HTTP API', { skip: !connectionString }, async (t) => {
         http.post('/transactions').send({
           client_transaction_id: randomUUID(),
           outlet_id: outlet.id,
+          cashier_session_id: session.id,
           ...(customerId ? { customer_id: customerId } : {}),
           items: [{ product_id: product.id, quantity }],
           payment: { method: 'CASH', amount },
@@ -225,8 +226,12 @@ test('Receipt HTTP API', { skip: !connectionString }, async (t) => {
             product_name: 'Kopi Susu',
             sku: 'KOPI-SUSU',
             quantity: 2,
+            base_price: 100,
+            effective_price: 100,
             unit_price: 100,
             subtotal: 200,
+            note: null,
+            modifiers: [],
           },
         ]);
         assert.equal('unit_cost' in receipt.items[0], false);
@@ -238,7 +243,9 @@ test('Receipt HTTP API', { skip: !connectionString }, async (t) => {
         });
         assert.equal(receipt.payment.method, 'CASH');
         assert.equal(receipt.payment.status, 'PAID');
-        assert.equal(receipt.payment.amount, 500);
+        assert.equal(receipt.payment.amount, 200);
+        assert.equal(receipt.payment.amount_received, 500);
+        assert.equal(receipt.payment.change_amount, 300);
         assert.equal(receipt.change, 300);
         assert.equal('tenant_id' in receipt, false);
         assert.equal('password_hash' in receipt.cashier, false);
@@ -270,6 +277,8 @@ test('Receipt HTTP API', { skip: !connectionString }, async (t) => {
         ).expect(200);
         assert.equal(response.body.customer, null);
         assert.equal(response.body.payment.amount, 100);
+        assert.equal(response.body.payment.amount_received, 100);
+        assert.equal(response.body.payment.change_amount, 0);
         assert.equal(response.body.totals.total, 100);
         assert.equal(response.body.change, 0);
       },

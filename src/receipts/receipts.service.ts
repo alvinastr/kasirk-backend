@@ -39,8 +39,21 @@ const receiptSelect = {
       quantity: true,
       unit_price: true,
       subtotal: true,
-      products: {
-        select: { name: true, sku: true },
+      product_name_snapshot: true,
+      sku_snapshot: true,
+      base_price_snapshot: true,
+      effective_price_snapshot: true,
+      note_snapshot: true,
+      transaction_item_modifiers: {
+        select: {
+          id: true,
+          modifier_group_id: true,
+          modifier_option_id: true,
+          group_name_snapshot: true,
+          option_name_snapshot: true,
+          price_delta_snapshot: true,
+        },
+        orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
       },
     },
     orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
@@ -88,7 +101,24 @@ export class ReceiptsService {
         if (!transaction) {
           throw new NotFoundException('Receipt not found');
         }
-        return this.toReceipt(transaction);
+        const legacyProductIds = [...new Set(
+          transaction.transaction_items
+            .filter((item) => item.product_name_snapshot === null)
+            .map((item) => item.product_id),
+        )];
+        const legacyProducts = legacyProductIds.length
+          ? await tx.products.findMany({
+              where: {
+                tenant_id: scope.tenantId,
+                id: { in: legacyProductIds },
+              },
+              select: { id: true, name: true, sku: true },
+            })
+          : [];
+        return this.toReceipt(
+          transaction,
+          new Map(legacyProducts.map((product) => [product.id, product])),
+        );
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
     );
@@ -127,7 +157,10 @@ export class ReceiptsService {
     return { tenantId };
   }
 
-  private toReceipt(transaction: ReceiptRecord) {
+  private toReceipt(
+    transaction: ReceiptRecord,
+    legacyProducts: Map<string, { id: string; name: string; sku: string }>,
+  ) {
     const payment =
       transaction.payments.find((candidate) => candidate.status === 'PAID') ??
       transaction.payments[0];
@@ -150,21 +183,57 @@ export class ReceiptsService {
       outlet: transaction.outlets,
       cashier: transaction.users,
       customer: transaction.customers,
-      items: transaction.transaction_items.map((item) => ({
-        item_id: item.id,
-        product_id: item.product_id,
-        product_name: item.products.name,
-        sku: item.products.sku,
-        quantity: item.quantity,
-        unit_price: this.money(item.unit_price),
-        subtotal: this.money(item.subtotal),
-      })),
+      items: transaction.transaction_items.map((item) => {
+        // A name snapshot identifies a V1 line. For those lines every snapshot,
+        // including a deliberately null SKU, is authoritative. Only legacy rows
+        // without a product snapshot may use the bounded product relation.
+        const isV1Snapshot = item.product_name_snapshot !== null;
+        const legacyProduct = legacyProducts.get(item.product_id);
+        const basePrice = isV1Snapshot
+          ? item.base_price_snapshot
+          : item.unit_price;
+        const effectivePrice = isV1Snapshot
+          ? item.effective_price_snapshot
+          : item.unit_price;
+        return {
+          item_id: item.id,
+          product_id: item.product_id,
+          product_name: isV1Snapshot
+            ? item.product_name_snapshot
+            : legacyProduct?.name ?? null,
+          sku: isV1Snapshot ? item.sku_snapshot : legacyProduct?.sku ?? null,
+          quantity: item.quantity,
+          base_price: basePrice != null ? this.money(basePrice) : null,
+          effective_price: effectivePrice != null
+            ? this.money(effectivePrice)
+            : null,
+          // unit_price remains the established receipt field and is already the
+          // effective price; modifier deltas are informational only.
+          unit_price: this.money(item.unit_price),
+          subtotal: this.money(item.subtotal),
+          note: item.note_snapshot,
+          modifiers: item.transaction_item_modifiers.map((modifier) => ({
+            id: modifier.id,
+            modifier_group_id: modifier.modifier_group_id,
+            modifier_option_id: modifier.modifier_option_id,
+            group_name: modifier.group_name_snapshot,
+            option_name: modifier.option_name_snapshot,
+            price_delta: modifier.price_delta_snapshot,
+          })),
+        };
+      }),
       payment: payment
         ? {
             id: payment.id,
             method: payment.method,
             status: payment.status,
             amount: this.money(payment.amount),
+            amount_received: payment.amount_received != null
+              ? this.money(payment.amount_received)
+              : null,
+            change_amount: payment.change_amount != null
+              ? this.money(payment.change_amount)
+              : null,
             provider: payment.provider,
             provider_reference: payment.provider_reference,
             paid_at: payment.paid_at,

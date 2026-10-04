@@ -43,6 +43,28 @@ function makeTx(config: any = {}) {
 }
 function service(tx: any) { const prisma: any = { $transaction: jest.fn(async (fn: any) => fn(tx)) }; return { service: new TransactionsService(prisma), prisma, tx }; }
 
+describe('TransactionsService M7 detail', () => {
+  it('uses one scoped legacy product lookup and exposes readable display fields without replacing snapshots', async () => {
+    const legacy = response({ cashier_session_id: null, transaction_items: [{
+      id: 'legacy-item', product_id: id.product, quantity: 2, unit_price: 120n, unit_cost: 30n, subtotal: 240n,
+      product_name_snapshot: null, sku_snapshot: null, base_price_snapshot: null,
+      effective_price_snapshot: null, note_snapshot: null, transaction_item_modifiers: [],
+    }] });
+    const tx = makeTx();
+    tx.transactions.findFirst.mockResolvedValue(legacy);
+    const products = { findMany: jest.fn<any>().mockResolvedValue([{ id: id.product, name: 'Legacy coffee', sku: 'OLD' }]) };
+    tx.products = products;
+    const result = await service(tx).service.findOne(user as any, legacy.id);
+    expect(products.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { tenant_id: id.tenant, id: { in: [id.product] } },
+    }));
+    expect(result.items[0]).toEqual(expect.objectContaining({
+      product_name_snapshot: null, product_name: 'Legacy coffee', sku: 'OLD',
+      base_price: 120, unit_price: 120, effective_price: 120, note: null, modifiers: [],
+    }));
+  });
+});
+
  describe('TransactionsService V1-M4 create', () => {
   it('prices modifiers, snapshots names/prices/note, and persists payment', async () => {
     const { service: s, tx } = service(makeTx()); const result = await s.create(user as any, input());
