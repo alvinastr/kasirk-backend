@@ -16,6 +16,7 @@ import { CreateHeldOrderItemDto } from './dto/create-held-order-item.dto';
 import { CreateHeldOrderDto } from './dto/create-held-order.dto';
 import { QueryHeldOrdersDto } from './dto/query-held-orders.dto';
 import { UpdateHeldOrderDto } from './dto/update-held-order.dto';
+import { calculateTax } from '../common/utils/tax.util';
 
 const detailInclude = Prisma.validator<Prisma.held_ordersInclude>()({
   users: { select: { id: true, name: true } },
@@ -312,21 +313,16 @@ export class HeldOrdersService {
 
   private totals(items: ResolvedItem[], tenant: { tax_enabled: boolean; tax_rate: unknown }) {
     const subtotal_estimate = items.reduce((sum, item) => sum + item.effectivePrice * BigInt(item.quantity), 0n);
-    const scaledRate = this.scaledTaxRate(tenant.tax_rate);
-    const tax_estimate = tenant.tax_enabled ? (subtotal_estimate * scaledRate + 5000n) / 10000n : 0n;
-    const total_estimate = subtotal_estimate + tax_estimate;
+    // M16B: shared tax helper — same arithmetic as TransactionsService, proven
+    // byte-for-byte equivalent by src/common/utils/tax.util.spec.ts.
+    // `total` from the helper is already `taxableAmount + tax`; do NOT add subtotal again.
+    const { tax: tax_estimate, total: total_estimate } = calculateTax(
+      tenant.tax_enabled,
+      tenant.tax_rate,
+      subtotal_estimate,
+    );
     for (const value of [subtotal_estimate, tax_estimate, total_estimate]) this.money(value);
     return { subtotal_estimate, tax_estimate, total_estimate };
-  }
-
-  /**
-   * Same interpretation as TransactionsService: a percentage with two decimals
-   * becomes a basis-point integer, so both paths round tax identically.
-   */
-  private scaledTaxRate(taxRate: unknown) {
-    const decimal = (taxRate as { toFixed?: (places: number) => string })?.toFixed;
-    if (typeof decimal === 'function') return BigInt(decimal.call(taxRate, 2).replace('.', ''));
-    return BigInt(Math.round(Number(taxRate) * 100));
   }
 
   private async persistItems(tx: Tx, tenantId: string, heldOrderId: string, items: ResolvedItem[]) {

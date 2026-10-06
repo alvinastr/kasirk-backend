@@ -18,10 +18,25 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { LegacySyncTransactionDto } from '../sync/dto/legacy-sync-transaction.dto';
 import { QueryTransactionsDto } from './dto/query-transactions.dto';
+import { calculateTax } from '../common/utils/tax.util';
 
 type CheckoutMode = 'V1' | 'LEGACY_SYNC';
 type CheckoutDto = Omit<CreateTransactionDto, 'cashier_session_id'> & { cashier_session_id: string | null };
 import { PaymentMethod, PaymentStatus, TransactionStatus } from './types/transaction.types';
+
+/**
+ * M16B: the reusable authoritative sale core is `executeTransactionCore(tx, user, dto, mode)`.
+ *
+ * `tx` is a caller-owned `Prisma.TransactionClient`. The core normalizes and
+ * lower-cases every id in `dto` and expects `user.sub` / `user.tenant_id` to
+ * already be lowercase (as `createInternal` supplies them). For M16C,
+ * `HeldOrdersService` must lower-case the actor ids itself; Prisma compares ids
+ * case-sensitively, so raw JWT values would break tenant scoping and
+ * idempotency lookups.
+ *
+ * Exported so M16C can type its own checkout entry point.
+ */
+export type { CheckoutDto, CheckoutMode };
 
 const summarySelect = {
     id: true,
@@ -121,11 +136,26 @@ export class TransactionsService {
         return this.createInternal(user, { ...dto, discount: 0, cashier_session_id: null }, 'LEGACY_SYNC');
     }
 
-    private async createInternal(user: JwtPayload, input: CheckoutDto, mode: CheckoutMode) {
-        if (!user || !isUUID(user.sub) || !isUUID(user.tenant_id)) {
-            throw new UnauthorizedException('Invalid user context');
-        }
-        // Keep validation for callers that invoke the service outside HTTP.
+    /**
+     * M16B: single definition of the V1 input contract, shared by
+     * `createInternal` and `executeTransactionCore`.
+     *
+     * `createInternal` runs this BEFORE opening its transaction so an invalid
+     * request never opens one. The core runs it too, because it is now
+     * publicly reachable: a future caller that skipped it would bypass the DTO
+     * contract entirely. Those rules are enforced ONLY by class-validator —
+     * negative discount, zero/oversized quantity, unbounded note, duplicate
+     * modifier option ids, and a null cashier session all reach pricing,
+     * stock, and persistence when the core is called directly. Validation is
+     * pure, so the second run on the public path changes no outcome.
+     *
+     * `LEGACY_SYNC` intentionally skips class-validator: `createLegacySync`
+     * already validated that payload against the narrower
+     * `LegacySyncTransactionDto`, and its shape (no cashier session, legacy
+     * CASH tender in `payment.amount`) is not expressible in
+     * `CreateTransactionDto`.
+     */
+    private async assertCheckoutInput(input: unknown, mode: CheckoutMode): Promise<CheckoutDto> {
         const dto = plainToInstance(CreateTransactionDto, input) as CheckoutDto;
         if (!dto) {
             throw new BadRequestException({ message: 'Invalid transaction input', error_code: 'INVALID_INPUT' });
@@ -143,26 +173,24 @@ export class TransactionsService {
             }
             throw new BadRequestException({ message: 'Invalid transaction input', error_code: 'INVALID_INPUT' });
         }
+        return dto;
+    }
+
+    private async createInternal(user: JwtPayload, input: CheckoutDto, mode: CheckoutMode) {
+        if (!user || !isUUID(user.sub) || !isUUID(user.tenant_id)) {
+            throw new UnauthorizedException('Invalid user context');
+        }
+        // Keep validation for callers that invoke the service outside HTTP.
+        const dto = await this.assertCheckoutInput(input, mode);
         this.assertPaymentShape(dto);
         const actorContext = { ...user, sub: user.sub.toLowerCase(), tenant_id: user.tenant_id.toLowerCase() };
-        dto.discount = dto.discount ?? 0;
-        dto.outlet_id = dto.outlet_id.toLowerCase();
-        dto.customer_id = dto.customer_id?.toLowerCase();
-        dto.client_transaction_id = dto.client_transaction_id.toLowerCase();
-        dto.cashier_session_id = mode === 'V1' ? dto.cashier_session_id!.toLowerCase() : null;
-        // Preserve original line order; do not sort by product_id so duplicate
-        // product lines with different modifiers/notes remain distinct.
-        dto.items = dto.items.map((item) => ({
-            ...item,
-            product_id: item.product_id.toLowerCase(),
-            modifier_option_ids: (item.modifier_option_ids ?? []).map((id) => id.toLowerCase()),
-            note: item.note?.trim(),
-        }));
+        // M16B: shared with the reusable core so both paths normalize identically.
+        const normalizedDto = this.normalizeCheckoutDto(dto, mode);
 
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
                 return await this.prisma.$transaction(
-                    (tx) => this.checkout(tx, actorContext, dto, mode),
+                    (tx) => this.executeTransactionCore(tx, actorContext, normalizedDto, mode),
                     { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted },
                 );
             } catch (error) {
@@ -283,6 +311,89 @@ export class TransactionsService {
             if (!outlet) throw new NotFoundException('Outlet not found');
         }
         return { tenant_id, ...(outlet_id ? { outlet_id } : {}) };
+    }
+
+    /**
+     * M16B: reusable authoritative sale core.
+     *
+     * Runs the complete authoritative sale logic — idempotency lookup, actor/
+     * tenant/outlet/session validation, catalog and modifier validation,
+     * authoritative pricing, tax, discount, transaction + item + modifier +
+     * payment writes, stock decrement, stock movement, and status transition to
+     * COMPLETED — against the CALLER-SUPPLIED `tx`.
+     *
+     * Contract for M16C (`HeldOrdersService.checkout`):
+     *  - It MUST NOT open `prisma.$transaction` itself. There is no nested
+     *    transaction here; the caller owns the boundary. Nesting would need
+     *    SAVEPOINT semantics and silently break atomicity of the held order +
+     *    transaction write.
+     *  - It MUST run every read and write through the supplied `tx`. A sale
+     *    write that escapes to `this.prisma` would commit outside the caller's
+     *    transaction and defeat rollback.
+     *  - It does NOT map Prisma errors to HTTP exceptions and does NOT retry.
+     *    Those remain the caller's responsibility (see `createInternal`), so
+     *    that M16C can decide its own retry policy for the combined unit of
+     *    work (held order + transaction).
+     *  - It DOES enforce the full V1 input contract itself (class-validator
+     *    with `whitelist` + `forbidNonWhitelisted`, plus payment shape), so a
+     *    caller cannot reach pricing, stock, or persistence with an input the
+     *    public `create()` would have rejected. M16C does not need to
+     *    re-validate the payload it builds from the held order, but it MUST
+     *    pass a well-formed `CheckoutDto`.
+     *  - Throwing propagates to the caller's transaction, which must roll back.
+     *  - Every id in `dto` and `user.sub`/`user.tenant_id` is normalized to
+     *    lowercase by this method. For M16C, normalize `user` before calling.
+     *
+     * Returns the same response shape as `create()` / `createLegacySync()`.
+     */
+    async executeTransactionCore(
+        tx: Prisma.TransactionClient,
+        user: JwtPayload,
+        dto: CheckoutDto,
+        mode: CheckoutMode,
+    ) {
+        // Normalize defensively at the core boundary. `createInternal` already
+        // normalizes, so this is a no-op there; for M16C it guarantees the core
+        // is safe to call with a freshly built DTO rather than throwing a raw
+        // BigInt/undefined TypeError deep inside pricing.
+        //
+        // M16B: the core re-runs the V1 input contract. `createInternal`
+        // validates before opening its transaction, but the core is public:
+        // a caller that skipped this would bypass every rule enforced only by
+        // class-validator (negative discount, zero/oversized quantity,
+        // unbounded note, duplicate modifier option ids, null cashier
+        // session). Validation is pure and idempotent, so the second run on
+        // the public path is a no-op.
+        const validated = await this.assertCheckoutInput(dto, mode);
+        const normalized = this.normalizeCheckoutDto(validated, mode);
+        // M16B: enforce payment shape here too. `createInternal` validates before
+        // opening its transaction; the core must be independently safe for M16C,
+        // which calls the core directly and would otherwise skip this check.
+        // Validation is pure, so the double call on the public path is a no-op.
+        this.assertPaymentShape(normalized);
+        return this.checkout(tx, user, normalized, mode);
+    }
+
+    /**
+     * Lower-cases every id and applies defaults. Shared by `createInternal` and
+     * `executeTransactionCore` so both paths normalize identically.
+     */
+    private normalizeCheckoutDto(dto: CheckoutDto, mode: CheckoutMode): CheckoutDto {
+        const out = { ...dto };
+        out.discount = out.discount ?? 0;
+        out.outlet_id = out.outlet_id.toLowerCase();
+        out.customer_id = out.customer_id?.toLowerCase();
+        out.client_transaction_id = out.client_transaction_id.toLowerCase();
+        out.cashier_session_id = mode === 'V1' ? out.cashier_session_id?.toLowerCase() ?? null : null;
+        // Preserve original line order; do not sort by product_id so duplicate
+        // product lines with different modifiers/notes remain distinct.
+        out.items = (out.items ?? []).map((item) => ({
+            ...item,
+            product_id: item.product_id.toLowerCase(),
+            modifier_option_ids: (item.modifier_option_ids ?? []).map((id) => id.toLowerCase()),
+            note: item.note?.trim(),
+        }));
+        return out;
     }
 
     private async checkout(tx: Prisma.TransactionClient, user: JwtPayload, dto: CheckoutDto, mode: CheckoutMode) {
@@ -511,10 +622,16 @@ export class TransactionsService {
         const subtotal = itemsForPersistence.reduce((sum, item) => sum + item.subtotal, 0n);
         const discount = BigInt(dto.discount);
         if (discount > subtotal) throw new BadRequestException('Discount exceeds subtotal');
-        const rate = BigInt(tenant.tax_rate.toFixed(2).replace('.', ''));
         const taxableAmount = subtotal - discount;
-        const tax = tenant.tax_enabled ? (taxableAmount * rate + 5000n) / 10000n : 0n;
-        const total = subtotal - discount + tax;
+        // M16B: shared tax helper guarantees byte-for-byte parity with
+        // HeldOrdersService estimates. Proven equivalent by tax.util.spec.ts.
+        // `total` from the helper is already `taxableAmount + tax`, so it MUST
+        // NOT be combined with subtotal/discount a second time.
+        const { tax, total } = calculateTax(
+            tenant.tax_enabled,
+            tenant.tax_rate,
+            taxableAmount,
+        );
         this.money(subtotal);
         this.money(tax);
         this.money(total);
