@@ -52,6 +52,7 @@ model cashier_sessions {
   tenants       tenants        @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_tenant")
   users         users          @relation(fields: [user_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_cashier_sessions_user_same_tenant")
   transactions  transactions[]
+  held_orders   held_orders[]
 
   @@unique([id, tenant_id], map: "uq_cashier_sessions_id_tenant")
   @@index([tenant_id], map: "idx_cashier_sessions_tenant_id")
@@ -117,6 +118,7 @@ model outlets {
   transactions      transactions[]
   users             users[]
   cashier_sessions  cashier_sessions[]
+  held_orders       held_orders[]
 
   @@unique([id, tenant_id], map: "uq_outlets_id_tenant")
   @@index([tenant_id], map: "idx_outlets_tenant_id")
@@ -266,6 +268,7 @@ model products {
   stock_movements         stock_movements[]
   transaction_items       transaction_items[]
   product_modifier_groups product_modifier_groups[]
+  held_order_items        held_order_items[]
 
   @@unique([tenant_id, sku], map: "uq_products_tenant_sku")
   @@unique([id, tenant_id], map: "uq_products_id_tenant")
@@ -341,6 +344,9 @@ model tenants {
   modifier_options           modifier_options[]
   product_modifier_groups    product_modifier_groups[]
   transaction_item_modifiers transaction_item_modifiers[]
+  held_orders                held_orders[]
+  held_order_items           held_order_items[]
+  held_order_item_modifiers  held_order_item_modifiers[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -391,6 +397,7 @@ model transactions {
   payments                   payments[]
   transaction_items          transaction_items[]
   transaction_item_modifiers transaction_item_modifiers[]
+  converted_held_orders      held_orders[]
   cashier_sessions           cashier_sessions?            @relation(fields: [cashier_session_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transactions_cashier_session_same_tenant")
   customers                  customers?                   @relation(fields: [customer_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_transactions_customer_same_tenant")
   outlets                    outlets                      @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onUpdate: NoAction, map: "fk_transactions_outlet_same_tenant")
@@ -432,6 +439,7 @@ model users {
   cashier_sessions    cashier_sessions[]
   device_sessions     device_sessions[]
   auth_audit_logs     auth_audit_logs[]
+  held_orders         held_orders[]
   outlets             outlets?            @relation(fields: [outlet_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_users_outlet")
   tenants             tenants             @relation(fields: [tenant_id], references: [id], onUpdate: NoAction, map: "fk_users_tenant")
 
@@ -439,4 +447,94 @@ model users {
   @@unique([tenant_id, login_code], map: "uq_users_tenant_login_code")
   @@unique([id, tenant_id], map: "uq_users_id_tenant")
   @@index([tenant_id], map: "idx_users_tenant_id")
+}
+
+/**
+ * Held Order (Open Bill) domain.
+ * V1-M7: Authoritative draft orders before checkout.
+ * Enforced tenant/outlet/cashier-session isolation via composite FKs and @@unique.
+ * Optimistic concurrency via integer version field.
+ * Server-authoritative pricing snapshots; modifier IDs are never serialized as JSON.
+ */
+
+model held_orders {
+  id                        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id                 String    @db.Uuid
+  outlet_id                 String    @db.Uuid
+  origin_cashier_session_id String    @db.Uuid
+  cashier_user_id           String    @db.Uuid
+  label                     String?   @db.VarChar(100)
+  status                    String    @default("OPEN") @db.VarChar(20)
+  version                   Int       @default(1)
+  subtotal_estimate         BigInt    @default(0)
+  tax_estimate              BigInt    @default(0)
+  total_estimate            BigInt    @default(0)
+  converted_transaction_id  String?   @db.Uuid
+  created_at                DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  cancelled_at              DateTime? @db.Timestamptz(6)
+  converted_at              DateTime? @db.Timestamptz(6)
+
+  tenants          tenants            @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_held_orders_tenant")
+  outlets          outlets            @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_held_orders_outlet_same_tenant")
+  cashier_sessions cashier_sessions   @relation(fields: [origin_cashier_session_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_held_orders_cashier_session_same_tenant")
+  users            users              @relation(fields: [cashier_user_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_held_orders_user_same_tenant")
+  transactions     transactions?      @relation(fields: [converted_transaction_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_held_orders_converted_transaction_same_tenant")
+  held_order_items held_order_items[]
+
+  @@unique([id, tenant_id], map: "uq_held_orders_id_tenant")
+  @@index([tenant_id], map: "idx_held_orders_tenant_id")
+  @@index([tenant_id, outlet_id], map: "idx_held_orders_tenant_outlet")
+  @@index([tenant_id, origin_cashier_session_id], map: "idx_held_orders_tenant_session")
+  @@index([tenant_id, cashier_user_id], map: "idx_held_orders_tenant_cashier")
+  @@index([tenant_id, status], map: "idx_held_orders_tenant_status")
+  @@index([tenant_id, created_at], map: "idx_held_orders_tenant_created_at")
+  @@map("held_orders")
+}
+
+model held_order_items {
+  id                       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id                String   @db.Uuid
+  held_order_id            String   @db.Uuid
+  product_id               String   @db.Uuid
+  quantity                 Int
+  product_name_snapshot    String   @db.VarChar(150)
+  sku_snapshot             String   @db.VarChar(100)
+  base_price_snapshot      BigInt
+  effective_price_snapshot BigInt
+  line_subtotal            BigInt
+  line_discount            BigInt   @default(0)
+  line_total               BigInt
+  note_snapshot            String?  @db.VarChar(255)
+  display_order            Int
+  created_at               DateTime @default(now()) @db.Timestamptz(6)
+
+  tenants                   tenants                     @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_held_order_items_tenant")
+  held_orders               held_orders                 @relation(fields: [held_order_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_held_order_items_order_same_tenant")
+  products                  products                    @relation(fields: [product_id, tenant_id], references: [id, tenant_id], onDelete: Restrict, onUpdate: NoAction, map: "fk_held_order_items_product_same_tenant")
+  held_order_item_modifiers held_order_item_modifiers[]
+
+  @@unique([id, tenant_id], map: "uq_held_order_items_id_tenant")
+  @@index([tenant_id, held_order_id], map: "idx_held_order_items_tenant_order")
+  @@index([product_id], map: "idx_held_order_items_product_id")
+  @@map("held_order_items")
+}
+
+model held_order_item_modifiers {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenant_id            String   @db.Uuid
+  held_order_item_id   String   @db.Uuid
+  modifier_group_id    String?  @db.Uuid
+  modifier_option_id   String?  @db.Uuid
+  group_name_snapshot  String   @db.VarChar(150)
+  option_name_snapshot String   @db.VarChar(150)
+  price_delta_snapshot Int
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+
+  tenants          tenants          @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_held_order_item_modifiers_tenant")
+  held_order_items held_order_items @relation(fields: [held_order_item_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_held_order_item_modifiers_item_same_tenant")
+
+  @@unique([id, tenant_id], map: "uq_held_order_item_modifiers_id_tenant")
+  @@index([tenant_id, held_order_item_id], map: "idx_held_order_item_modifiers_tenant_item")
+  @@map("held_order_item_modifiers")
 }

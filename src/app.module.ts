@@ -17,6 +17,7 @@ import { ReceiptsModule } from './receipts/receipts.module';
 import { ShiftsModule } from './shifts/shifts.module';
 import { SyncModule } from './sync/sync.module';
 import { ModifierGroupsModule } from './modifier-groups/modifier-groups.module';
+import { HeldOrdersModule } from './held-orders/held-orders.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { ModifierGroupsModule } from './modifier-groups/modifier-groups.module';
     SyncModule,
 
     ModifierGroupsModule,
+    HeldOrdersModule,
   ],
   controllers: [
     AppController,
