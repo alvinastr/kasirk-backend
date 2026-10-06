@@ -25,17 +25,17 @@ function queryInteger(value: unknown): unknown {
 @ValidatorConstraint({ name: 'endDateAfterStartDate', async: false })
 class EndDateAfterStartDateConstraint implements ValidatorConstraintInterface {
   validate(value: unknown, args: ValidationArguments): boolean {
-    const { start_date } = args.object as QueryTransactionsDto;
-    if (typeof start_date !== 'string' || typeof value !== 'string') {
+    const { from } = args.object as QueryTransactionsDto;
+    if (typeof from !== 'string' || typeof value !== 'string') {
         return true; // Individual field validators handle malformed dates.
     }
-    const start = Date.parse(start_date);
+    const start = Date.parse(from);
     const end = Date.parse(value);
     return !Number.isFinite(start) || !Number.isFinite(end) || end > start;
   }
 
   defaultMessage(): string {
-    return 'end_date must be later than start_date';
+    return 'to must be later than from';
   }
 }
 
@@ -64,25 +64,25 @@ export class QueryTransactionsDto {
     format: 'date-time',
     nullable: true,
     pattern: 'UTC_TIMESTAMP',
-    description: 'Start of the query range as an ISO 8601 UTC timestamp.',
+    description: 'Start of the query range (inclusive) as an ISO 8601 UTC timestamp.',
   })
   @ValidateIf((_object: unknown, value: unknown) => value !== undefined)
   @IsISO8601({ strict: true, strictSeparator: true })
-  @Matches(UTC_TIMESTAMP, { message: 'start_date must be an ISO 8601 UTC timestamp' })
-  start_date?: string;
+  @Matches(UTC_TIMESTAMP, { message: 'from must be an ISO 8601 UTC timestamp' })
+  from?: string;
 
   @ApiPropertyOptional({
     type: String,
     format: 'date-time',
     nullable: true,
     pattern: 'UTC_TIMESTAMP',
-    description: 'End of the query range as an ISO 8601 UTC timestamp.',
+    description: 'End of the query range (exclusive) as an ISO 8601 UTC timestamp.',
   })
   @ValidateIf((_object: unknown, value: unknown) => value !== undefined)
   @IsISO8601({ strict: true, strictSeparator: true })
-  @Matches(UTC_TIMESTAMP, { message: 'end_date must be an ISO 8601 UTC timestamp' })
+  @Matches(UTC_TIMESTAMP, { message: 'to must be an ISO 8601 UTC timestamp' })
   @Validate(EndDateAfterStartDateConstraint)
-  end_date?: string;
+  to?: string;
 
   @ApiProperty({
     type: Number,

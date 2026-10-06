@@ -192,6 +192,31 @@ export class ModifierGroupsService {
     throw error;
   }
 
+  async removeOption(
+    user: JwtPayload,
+    groupId: string,
+    optionId: string,
+  ) {
+    const option = await this.prisma.modifier_options.findFirst({
+      where: {
+        id: optionId,
+        modifier_group_id: groupId,
+        tenant_id: user.tenant_id,
+      },
+      select: { id: true },
+    });
+    if (!option) {
+      throw new NotFoundException({
+        error_code: 'MODIFIER_OPTION_NOT_FOUND',
+        message: 'Modifier option not found',
+      });
+    }
+    return this.prisma.modifier_options.update({
+      where: { id: optionId },
+      data: { is_active: false },
+    });
+  }
+
   private rethrowOptionWriteError(error: unknown): never {
     if (
       isUniqueConstraintViolation(error, 'uq_modifier_options_tenant_group_name', [

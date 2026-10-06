@@ -9,7 +9,7 @@ import { isUniqueConstraintViolation } from '../common/utils/prisma-error.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
-import { ReplaceProductModifierGroupsDto } from './dto/replace-product-modifier-groups.dto';
+import { ReplaceProductModifierGroupsDto, ReplaceProductModifierGroupItemDto } from './dto/replace-product-modifier-groups.dto';
 import { QueryProductsDto } from './dto/query-products.dto';
 
 const MODIFIER_SELECTION_TYPES = ['SINGLE', 'MULTIPLE'] as const;
@@ -279,6 +279,167 @@ export class ProductsService {
     return this.getModifierGroups(user, productId);
   }
 
+  async assignModifierGroup(
+    user: JwtPayload,
+    productId: string,
+    dto: ReplaceProductModifierGroupItemDto,
+  ) {
+    await this.validateProductOwnership(user.tenant_id, productId);
+
+    if (!MODIFIER_SELECTION_TYPES.includes(dto.selection_type)) {
+      throw new BadRequestException({
+        error_code: 'INVALID_MODIFIER_SELECTION_TYPE',
+        message: 'selection_type must be SINGLE or MULTIPLE',
+      });
+    }
+    if (dto.required && dto.selection_type === 'MULTIPLE') {
+      throw new BadRequestException({
+        error_code: 'REQUIRED_MULTIPLE_NOT_SUPPORTED',
+        message: 'Required MULTIPLE modifier groups are not supported in V1',
+      });
+    }
+
+    const group = await this.prisma.modifier_groups.findFirst({
+      where: {
+        tenant_id: user.tenant_id,
+        id: dto.modifier_group_id,
+        is_active: true,
+      },
+      select: { id: true },
+    });
+    if (!group) {
+      throw new NotFoundException({
+        error_code: 'MODIFIER_GROUP_NOT_FOUND',
+        message: 'Active modifier group not found',
+      });
+    }
+
+    try {
+      return await this.prisma.product_modifier_groups.create({
+        data: {
+          tenant_id: user.tenant_id,
+          product_id: productId,
+          modifier_group_id: dto.modifier_group_id,
+          required: dto.required,
+          selection_type: dto.selection_type,
+          display_order: dto.display_order,
+        },
+      });
+    } catch (error) {
+      this.rethrowAssignmentWriteError(error);
+    }
+  }
+
+  async updateModifierGroupAssignment(
+    user: JwtPayload,
+    productId: string,
+    groupId: string,
+    dto: ReplaceProductModifierGroupItemDto,
+  ) {
+    await this.validateProductOwnership(user.tenant_id, productId);
+
+    if (!MODIFIER_SELECTION_TYPES.includes(dto.selection_type)) {
+      throw new BadRequestException({
+        error_code: 'INVALID_MODIFIER_SELECTION_TYPE',
+        message: 'selection_type must be SINGLE or MULTIPLE',
+      });
+    }
+    if (dto.required && dto.selection_type === 'MULTIPLE') {
+      throw new BadRequestException({
+        error_code: 'REQUIRED_MULTIPLE_NOT_SUPPORTED',
+        message: 'Required MULTIPLE modifier groups are not supported in V1',
+      });
+    }
+
+    const assignment = await this.prisma.product_modifier_groups.findFirst({
+      where: {
+        tenant_id: user.tenant_id,
+        product_id: productId,
+        modifier_group_id: groupId,
+      },
+      select: { tenant_id: true, product_id: true, modifier_group_id: true },
+    });
+    if (!assignment) {
+      throw new NotFoundException({
+        error_code: 'MODIFIER_GROUP_ASSIGNMENT_NOT_FOUND',
+        message: 'Modifier group assignment not found',
+      });
+    }
+
+    const group = await this.prisma.modifier_groups.findFirst({
+      where: {
+        tenant_id: user.tenant_id,
+        id: dto.modifier_group_id,
+        is_active: true,
+      },
+      select: { id: true },
+    });
+    if (!group) {
+      throw new NotFoundException({
+        error_code: 'MODIFIER_GROUP_NOT_FOUND',
+        message: 'Active modifier group not found',
+      });
+    }
+
+    if (dto.modifier_group_id !== groupId) {
+      const existing = await this.prisma.product_modifier_groups.findFirst({
+        where: {
+          tenant_id: user.tenant_id,
+          product_id: productId,
+          modifier_group_id: dto.modifier_group_id,
+        },
+        select: { modifier_group_id: true },
+      });
+      if (existing) {
+        throw new ConflictException({
+          error_code: 'MODIFIER_GROUP_ALREADY_ASSIGNED',
+          message: 'Modifier group already assigned to this product',
+        });
+      }
+    }
+
+    try {
+      return await this.prisma.product_modifier_groups.update({
+        where: { tenant_id_product_id_modifier_group_id: { tenant_id: user.tenant_id, product_id: productId, modifier_group_id: groupId } },
+        data: {
+          modifier_group_id: dto.modifier_group_id,
+          required: dto.required,
+          selection_type: dto.selection_type,
+          display_order: dto.display_order,
+        },
+      });
+    } catch (error) {
+      this.rethrowAssignmentWriteError(error);
+    }
+  }
+
+  async removeModifierGroup(
+    user: JwtPayload,
+    productId: string,
+    groupId: string,
+  ) {
+    await this.validateProductOwnership(user.tenant_id, productId);
+
+    const assignment = await this.prisma.product_modifier_groups.findFirst({
+      where: {
+        tenant_id: user.tenant_id,
+        product_id: productId,
+        modifier_group_id: groupId,
+      },
+      select: { tenant_id: true, product_id: true, modifier_group_id: true },
+    });
+    if (!assignment) {
+      throw new NotFoundException({
+        error_code: 'MODIFIER_GROUP_ASSIGNMENT_NOT_FOUND',
+        message: 'Modifier group assignment not found',
+      });
+    }
+
+    return this.prisma.product_modifier_groups.delete({
+      where: { tenant_id_product_id_modifier_group_id: { tenant_id: user.tenant_id, product_id: productId, modifier_group_id: groupId } },
+    });
+  }
+
   private stockInclude(user: JwtPayload) {
     if (!user.outlet_id) {
       return false;
@@ -348,6 +509,22 @@ export class ProductsService {
       throw new ConflictException({
         error_code: 'SKU_ALREADY_EXISTS',
         message: 'Product SKU already exists',
+      });
+    }
+    throw error;
+  }
+
+  private rethrowAssignmentWriteError(error: unknown): never {
+    if (
+      isUniqueConstraintViolation(error, 'product_modifier_groups_pkey', [
+        'tenant_id',
+        'product_id',
+        'modifier_group_id',
+      ])
+    ) {
+      throw new ConflictException({
+        error_code: 'MODIFIER_GROUP_ALREADY_ASSIGNED',
+        message: 'Modifier group already assigned to this product',
       });
     }
     throw error;

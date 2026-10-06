@@ -1,13 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Delete, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiBadRequestResponse,
@@ -20,6 +11,7 @@ import {
   ApiParam,
   ApiTags,
   ApiUnauthorizedResponse,
+  ApiNoContentResponse,
 } from '@nestjs/swagger';
 import { JwtGuard } from '../auth/jwt.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -175,5 +167,35 @@ export class ModifierGroupsController {
     @Body() dto: UpdateModifierOptionDto,
   ) {
     return this.modifierGroupsService.updateOption(user, groupId, optionId, dto);
+  }
+
+  @Delete(':id/options/:option_id')
+  @Roles('OWNER', 'ADMIN')
+  @ApiOperation({
+    summary: 'Delete a modifier option (soft delete)',
+    description: 'Deactivate a modifier option. OWNER and ADMIN roles only.',
+  })
+  @ApiParam({
+    name: 'id',
+    type: 'string',
+    format: 'uuid',
+    description: 'Modifier group UUID',
+  })
+  @ApiParam({
+    name: 'option_id',
+    type: 'string',
+    format: 'uuid',
+    description: 'Modifier option UUID',
+  })
+  @ApiNoContentResponse({ description: 'Modifier option deleted successfully' })
+  @ApiUnauthorizedResponse({ description: 'Missing or invalid JWT token' })
+  @ApiForbiddenResponse({ description: 'Insufficient role (OWNER or ADMIN required)' })
+  @ApiNotFoundResponse({ description: 'Modifier option not found' })
+  removeOption(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', new ParseUUIDPipe()) groupId: string,
+    @Param('option_id', new ParseUUIDPipe()) optionId: string,
+  ) {
+    return this.modifierGroupsService.removeOption(user, groupId, optionId);
   }
 }

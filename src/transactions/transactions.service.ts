@@ -203,15 +203,18 @@ export class TransactionsService {
         }
         return this.prisma.$transaction(async (tx) => {
             const scope = await this.readScope(tx, user, query.outlet_id);
+            // Half-open boundaries: from <= created_at < to (`to` is exclusive).
+            // The filter is part of `where`, so it constrains `count` and the
+            // paginated `findMany` alike — tenant/outlet scope and the date
+            // range are applied before skip/take, never after.
+            const dateFilters: Prisma.transactionsWhereInput['created_at'] = {};
+            if (query.from) dateFilters.gte = new Date(query.from);
+            if (query.to) dateFilters.lt = new Date(query.to);
+            const hasDateFilter = query.from || query.to;
             const where: Prisma.transactionsWhereInput = {
                 ...scope,
                 ...(query.status ? { status: query.status } : {}),
-                ...(query.start_date || query.end_date ? {
-                    created_at: {
-                        ...(query.start_date ? { gte: new Date(query.start_date) } : {}),
-                        ...(query.end_date ? { lt: new Date(query.end_date) } : {}),
-                    },
-                } : {}),
+                ...(hasDateFilter ? { created_at: dateFilters } : {}),
             };
             const total = await tx.transactions.count({ where });
             const rows = await tx.transactions.findMany({

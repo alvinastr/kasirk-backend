@@ -325,3 +325,105 @@ describe('TransactionsService M7 detail', () => {
     await expect(s.create(user as any, input())).rejects.toBeInstanceOf(ServiceUnavailableException); expect(prisma.$transaction).toHaveBeenCalledTimes(3);
   });
 });
+
+
+describe('Modifier historical snapshot regression', () => {
+  it('keeps historical Rp5,000 snapshot after master price changes to Rp7,000 and deactivation', async () => {
+    const tx = makeTx();
+    const historical = response({ transaction_items: [{
+      id: 'historical-item', product_id: id.product, quantity: 1, unit_price: 5_100n, unit_cost: 50n,
+      subtotal: 5_100n, product_name_snapshot: 'Coffee', sku_snapshot: 'COF', base_price_snapshot: 100n,
+      effective_price_snapshot: 5_100n, note_snapshot: null,
+      transaction_item_modifiers: [{ id: 'historical-modifier', modifier_group_id: id.group, modifier_option_id: id.option,
+        group_name_snapshot: 'Extra', option_name_snapshot: 'Extra Shot', price_delta_snapshot: 5_000 }],
+    }] });
+    tx.transactions.findFirst.mockResolvedValue(historical);
+    const historicalResult = await service(tx).service.findOne(user as any, historical.id);
+    expect(historicalResult.items[0].modifiers[0]).toEqual(expect.objectContaining({
+      option_name_snapshot: 'Extra Shot', price_delta_snapshot: 5_000,
+    }));
+
+    // The master definition is edited from Rp5,000 to Rp7,000.
+    tx.transactions.findFirst.mockResolvedValue(null);
+    tx.modifier_options.findMany.mockResolvedValue([{ id: id.option, modifier_group_id: id.group, name: 'Extra Shot', price_delta: 7_000 }]);
+    await service(tx).service.create(user as any, input({
+      client_transaction_id: '55555555-5555-4555-8555-555555555556',
+      payment: { method: PaymentMethod.CASH, amount_received: 20_000 },
+    }));
+    expect(tx.transaction_item_modifiers.createMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: [expect.objectContaining({ option_name_snapshot: 'Extra Shot', price_delta_snapshot: 7_000 })],
+    }));
+
+    // Soft-deleting the option/group leaves the historical row readable from snapshots alone.
+    tx.modifier_options.findMany.mockResolvedValue([]);
+    tx.modifier_groups.findMany.mockResolvedValue([]);
+    tx.transactions.findFirst.mockResolvedValue(historical);
+    const afterDeactivation = await service(tx).service.findOne(user as any, historical.id);
+    expect(afterDeactivation.items[0].modifiers[0]).toEqual(expect.objectContaining({
+      option_name_snapshot: 'Extra Shot', price_delta_snapshot: 5_000,
+    }));
+  });
+});
+
+describe('TransactionsService findAll date filtering (half-open [from, to) with Asia/Jakarta)', () => {
+  const baseUser = { sub: id.user, tenant_id: id.tenant, role: 'OWNER', outlet_id: id.outlet };
+
+  function makeFindAllTx(overrides: any = {}) {
+    return {
+      users: { findFirst: jest.fn().mockResolvedValue({ outlet_id: id.outlet, role: 'OWNER' }) },
+      transactions: {
+        count: jest.fn().mockResolvedValue(0),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      ...overrides,
+    };
+  }
+
+  function runFindAll(tx: any, input: any) {
+    const prisma: any = {
+      $transaction: jest.fn(async (fn: any) => fn(tx)),
+    };
+    const s = new TransactionsService(prisma);
+    return s.findAll(baseUser as any, input);
+  }
+
+  it('uses Asia/Jakarta local day boundaries as UTC instants for 2026-10-06', async () => {
+    const tx = makeFindAllTx();
+    await runFindAll(tx, { from: '2026-10-05T17:00:00Z', to: '2026-10-06T17:00:00Z', page: 1, limit: 20 });
+    const where = tx.transactions.count.mock.calls[0][0].where;
+    expect(where.created_at).toEqual({
+      gte: new Date('2026-10-05T17:00:00Z'),
+      lt: new Date('2026-10-06T17:00:00Z'),
+    });
+  });
+
+  it('models boundary inclusion/exclusion with gte/lt: before start excluded, start included, end-minus included, next-start excluded', async () => {
+    const from = new Date('2026-10-05T17:00:00Z');
+    const to = new Date('2026-10-06T17:00:00Z');
+    const inRange = (value: string) => {
+      const d = new Date(value);
+      return d >= from && d < to;
+    };
+    expect(inRange('2026-10-05T16:59:59.999Z')).toBe(false);
+    expect(inRange('2026-10-05T17:00:00.000Z')).toBe(true);
+    expect(inRange('2026-10-06T16:59:59.999Z')).toBe(true);
+    expect(inRange('2026-10-06T17:00:00.000Z')).toBe(false);
+  });
+
+  it('applies date filter in where clause before pagination (count and findMany share same where)', async () => {
+    const tx = makeFindAllTx();
+    await runFindAll(tx, { from: '2026-10-05T17:00:00Z', to: '2026-10-06T17:00:00Z', page: 2, limit: 10 });
+    const countWhere = tx.transactions.count.mock.calls[0][0].where;
+    const findManyArg = tx.transactions.findMany.mock.calls[0][0];
+    expect(countWhere).toEqual(findManyArg.where);
+    expect(findManyArg.skip).toBe(10);
+    expect(findManyArg.take).toBe(10);
+  });
+
+  it('omitting from/to retains all-time behavior (no created_at in where)', async () => {
+    const tx = makeFindAllTx();
+    await runFindAll(tx, { page: 1, limit: 20 });
+    const where = tx.transactions.count.mock.calls[0][0].where;
+    expect(where.created_at).toBeUndefined();
+  });
+});
