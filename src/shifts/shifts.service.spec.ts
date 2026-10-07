@@ -54,6 +54,10 @@ function makeTx(config: any = {}) {
       create: jest.fn<any>().mockResolvedValue(shift()),
       updateMany: jest.fn<any>().mockResolvedValue({ count: 1 }),
     },
+    held_orders: {
+      count: jest.fn<any>().mockResolvedValue(0),
+    },
+    $queryRaw: jest.fn<any>().mockResolvedValue([]),
     transactions: {
       aggregate: jest.fn<any>().mockResolvedValue({ _sum: { total: 575n }, _count: { _all: 3 } }),
       findMany: jest.fn<any>().mockResolvedValue([
@@ -217,6 +221,87 @@ describe('ShiftsService V1-M6', () => {
     expect(tx.cashier_sessions.updateMany).not.toHaveBeenCalled();
   });
 
+  it('rejects close with OPEN held order from same tenant and origin session', async () => {
+      const tx = makeTx();
+      tx.cashier_sessions.findFirst.mockResolvedValue(shift());
+      tx.held_orders.count.mockResolvedValue(1);
+      await expect(service(tx).service.close(cashierUser, id.shift, {})).rejects.toMatchObject({
+        status: 409,
+        response: { error_code: 'OPEN_HELD_ORDERS_EXIST', open_held_order_count: 1 },
+      });
+      expect(tx.held_orders.count).toHaveBeenCalledWith({
+        where: { tenant_id: id.tenant, origin_cashier_session_id: id.shift, status: 'OPEN' },
+      });
+      expect(tx.transactions.aggregate).not.toHaveBeenCalled();
+      expect(tx.cashier_sessions.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('reports the blocking order count without exposing order or customer detail', async () => {
+      const tx = makeTx();
+      tx.cashier_sessions.findFirst.mockResolvedValue(shift());
+      tx.held_orders.count.mockResolvedValue(3);
+      const error: any = await service(tx).service.close(cashierUser, id.shift, {}).catch((e) => e);
+      expect(error.getResponse()).toEqual({
+        message: 'Shift has OPEN Held Orders',
+        error_code: 'OPEN_HELD_ORDERS_EXIST',
+        open_held_order_count: 3,
+      });
+    });
+
+    it('locks the origin session row before counting OPEN held orders inside the close transaction', async () => {
+      const tx = makeTx();
+      tx.cashier_sessions.findFirst.mockResolvedValue(shift());
+      const { service: s, prisma } = service(tx);
+      await s.close(cashierUser, id.shift, {});
+      // Serializable would pin this transaction's snapshot at its first query, so
+      // the OPEN lookup issued after the lock would still miss a Held Order that
+      // committed while this transaction waited for the session row.
+      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      });
+      expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(tx.held_orders.count.mock.invocationCallOrder[0]).toBeGreaterThan(
+        tx.$queryRaw.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('leaves the session OPEN with no close side effects when OPEN held orders block', async () => {
+      const tx = makeTx();
+      let stored = shift();
+      tx.cashier_sessions.findFirst.mockImplementation(async () => stored);
+      tx.held_orders.count.mockResolvedValue(2);
+      const { service: s } = service(tx, async (callback: any) => {
+        const before = { ...stored };
+        try {
+          return await callback(tx);
+        } catch (error) {
+          stored = before;
+          throw error;
+        }
+      });
+      await expect(s.close(cashierUser, id.shift, {})).rejects.toMatchObject({
+        response: { error_code: 'OPEN_HELD_ORDERS_EXIST' },
+      });
+      expect(stored).toMatchObject({ status: 'OPEN', closed_at: null });
+      expect(tx.cashier_sessions.updateMany).not.toHaveBeenCalled();
+      expect(tx.transactions.aggregate).not.toHaveBeenCalled();
+    });
+
+    it.each(['CONVERTED', 'CANCELLED'])('%s held orders do not block close', async (status) => {
+      const tx = makeTx();
+      tx.cashier_sessions.findFirst
+        .mockResolvedValueOnce(shift())
+        .mockResolvedValueOnce(shift({ status: 'CLOSED', closed_at: closedAt }));
+      tx.held_orders.count.mockResolvedValue(0);
+      await expect(service(tx).service.close(cashierUser, id.shift, {})).resolves.toMatchObject({ status: 'CLOSED' });
+      expect(tx.held_orders.count).toHaveBeenCalledWith({
+        where: { tenant_id: id.tenant, origin_cashier_session_id: id.shift, status: 'OPEN' },
+      });
+      expect(tx.cashier_sessions.updateMany).toHaveBeenCalledTimes(1);
+      // The predicate is status-scoped, so terminal orders cannot match it.
+      expect(status).not.toBe('OPEN');
+    });
+
   it('rejects concurrent close when conditional update affects zero rows', async () => {
     const tx = makeTx();
     tx.cashier_sessions.findFirst.mockResolvedValue(shift());
@@ -245,7 +330,7 @@ describe('ShiftsService V1-M6', () => {
     });
     await expect(s.close(cashierUser, id.shift, {})).rejects.toBe(failure);
     expect(stored).toMatchObject({ status: 'OPEN', closed_at: null });
-    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
   });
 
   it.each(['sales', 'cash', 'qris'])('rejects unsafe bigint %s instead of losing precision', async (field) => {

@@ -455,6 +455,12 @@ export class HeldOrdersService {
     if (!tenant) throw new UnauthorizedException('Tenant is inactive');
     const outlet = await tx.outlets.findFirst({ where: { id: outletId, tenant_id: user.tenant_id, is_active: true }, select: { id: true } });
     if (!outlet) throw new NotFoundException('Outlet not found');
+    // M16D: serialize OPEN Held Order creation with shift close. The close
+    // path locks this same origin session row before counting OPEN orders.
+    // This lock must be acquired before the session validation and insert.
+    await tx.$queryRaw`SELECT id FROM cashier_sessions
+      WHERE id = ${sessionId} AND tenant_id = ${user.tenant_id}
+      FOR UPDATE`;
     const session = await tx.cashier_sessions.findFirst({
       where: { id: sessionId, tenant_id: user.tenant_id, user_id: user.sub, status: 'OPEN' },
       select: { id: true, outlet_id: true },

@@ -129,6 +129,14 @@ export class ShiftsService {
     const shiftId = id.toLowerCase();
     await this.validDto(CloseShiftDto, input);
 
+    // M16D. READ COMMITTED, not SERIALIZABLE, and the session row is locked
+    // before the OPEN lookup. Under REPEATABLE READ/SERIALIZABLE PostgreSQL
+    // fixes this transaction's snapshot at its first query, so the
+    // held_orders predicate would be evaluated against a snapshot taken
+    // before a concurrent Held Order writer committed, and the wait for the
+    // session lock below would not refresh it. At READ COMMITTED every
+    // statement takes a fresh snapshot, so the OPEN lookup issued after the
+    // lock is granted observes whatever the previous lock holder committed.
     return this.serializableWrite(async (tx) => {
       const actor = await this.actorContext(tx, user);
       const shift = await tx.cashier_sessions.findFirst({
@@ -148,6 +156,34 @@ export class ShiftsService {
         throw new ConflictException({
           message: 'Shift is already closed',
           error_code: 'SHIFT_ALREADY_CLOSED',
+        });
+      }
+
+      // Serialize against Held Order creation on the same origin session.
+      // HeldOrdersService.create takes this exact lock before it inserts, so
+      // the OPEN lookup and the OPEN -> CLOSED transition below cannot
+      // interleave with an insert: either the writer commits first and is
+      // counted here, or this transaction commits first and the writer's own
+      // OPEN-session check rejects the now-closed session.
+      await tx.$queryRaw`SELECT id FROM cashier_sessions
+        WHERE id = ${shift.id} AND tenant_id = ${actor.tenantId}
+        FOR UPDATE`;
+
+      // M16D invariant: only OPEN orders originating from this session block.
+      // CONVERTED and CANCELLED orders are terminal and never block, and the
+      // tenant_id predicate keeps the rule inside the actor's tenant.
+      const openHeldOrders = await tx.held_orders.count({
+        where: {
+          tenant_id: actor.tenantId,
+          origin_cashier_session_id: shift.id,
+          status: 'OPEN',
+        },
+      });
+      if (openHeldOrders > 0) {
+        throw new ConflictException({
+          message: 'Shift has OPEN Held Orders',
+          error_code: 'OPEN_HELD_ORDERS_EXIST',
+          open_held_order_count: openHeldOrders,
         });
       }
 
@@ -188,7 +224,7 @@ export class ShiftsService {
         throw new InternalServerErrorException('Unable to read closed shift');
       }
       return this.toResponse(closedShift);
-    });
+    }, false, Prisma.TransactionIsolationLevel.ReadCommitted);
   }
 
   async summary(user: JwtPayload, id: string) {
@@ -305,11 +341,12 @@ export class ShiftsService {
   private async serializableWrite<T>(
     callback: (tx: Prisma.TransactionClient) => Promise<T>,
     opening = false,
+    isolationLevel: Prisma.TransactionIsolationLevel = Prisma.TransactionIsolationLevel.Serializable,
   ): Promise<T> {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         return await this.prisma.$transaction(callback, {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          isolationLevel,
         });
       } catch (error) {
         if (error instanceof HttpException) {

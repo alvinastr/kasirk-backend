@@ -72,6 +72,7 @@ function order(overrides: Record<string, unknown> = {}) {
 
 function makeTx() {
   return {
+    $queryRaw: jest.fn<any>().mockResolvedValue([]),
     users: { findFirst: jest.fn<any>().mockResolvedValue({ role: 'CASHIER', outlet_id: id.outlet }) },
     tenants: { findFirst: jest.fn<any>().mockResolvedValue({ tax_enabled: false, tax_rate: 0 }) },
     outlets: { findFirst: jest.fn<any>().mockResolvedValue({ id: id.outlet }) },

@@ -102,6 +102,7 @@ let claimAttempts = 0;
 
 function makeTx() {
   const tx: any = {
+    $queryRaw: jest.fn<any>().mockResolvedValue([]),
     held_orders: {
       findFirst: jest.fn<any>(),
       updateMany: jest.fn<any>().mockResolvedValue({ count: 1 }),
