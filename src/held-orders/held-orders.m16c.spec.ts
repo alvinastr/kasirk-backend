@@ -507,7 +507,7 @@ describe('HeldOrdersService M16C conversion (mocked core)', () => {
       payment: { method: PaymentMethod.QRIS },
     } as any);
 
-    expect(result.status).toBe(TransactionStatus.COMPLETED);
+    expect(result.transaction.status).toBe(TransactionStatus.COMPLETED);
     expect(tx.held_orders.updateMany).toHaveBeenCalledTimes(2);
     const [claimUpdate, terminalUpdate] = tx.held_orders.updateMany.mock.calls as any;
     expect(claimUpdate[0].where.version).toBe(1);
@@ -516,7 +516,7 @@ describe('HeldOrdersService M16C conversion (mocked core)', () => {
     expect(terminalUpdate[0].data.status).toBe('CONVERTED');
     expect(terminalUpdate[0].data.converted_at).toBeDefined();
     expect(terminalUpdate[0].data.converted_transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
-    expect(result.transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    expect(result.transaction.transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
     expect(tx.held_order_items.create).not.toHaveBeenCalled();
     expect(tx.transactions.create).toHaveBeenCalled();
     expect(tx.transactions.update).toHaveBeenCalled();
@@ -540,8 +540,45 @@ describe('HeldOrdersService M16C conversion (mocked core)', () => {
 
     // The canonical transaction id is whatever the core persisted; the service
     // must return it verbatim, not re-derive or invent one.
-    expect(result.transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
-    expect(result.client_transaction_id).toBe('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+    expect(result.transaction.transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    expect(result.transaction.client_transaction_id).toBe('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
+  });
+
+  it('M16G-0A: a fresh conversion reports replayed=false', async () => {
+    const tx = makeTx();
+    const svc = mockTransactionsService(tx);
+    tx.held_orders.findFirst.mockResolvedValue(heldOrder());
+
+    const { service: subject } = service(tx, svc);
+
+    const result = await subject.checkout(user, id.order, {
+      expected_version: 1,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      payment: { method: PaymentMethod.QRIS },
+    } as any);
+
+    // replayed=false only because THIS request performed the OPEN -> CONVERTED
+    // transition inside its own Serializable transaction.
+    expect(result.replayed).toBe(false);
+    expect(result.transaction.transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+  });
+
+  it('M16G-0A: the success envelope has exactly transaction and replayed', async () => {
+    const tx = makeTx();
+    const svc = mockTransactionsService(tx);
+    tx.held_orders.findFirst.mockResolvedValue(heldOrder());
+
+    const { service: subject } = service(tx, svc);
+
+    const result = await subject.checkout(user, id.order, {
+      expected_version: 1,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      payment: { method: PaymentMethod.QRIS },
+    } as any);
+
+    // No replay metadata leaks into the canonical transaction payload.
+    expect(Object.keys(result).sort()).toEqual(['replayed', 'transaction']);
+    expect(result.transaction).not.toHaveProperty('replayed');
   });
 
   it('marks the held order CONVERTED', async () => {
@@ -575,7 +612,7 @@ describe('HeldOrdersService M16C conversion (mocked core)', () => {
     } as any);
 
     const update = tx.held_orders.updateMany.mock.calls[1][0] as any;
-    expect(update.data.converted_transaction_id).toBe(result.transaction_id);
+    expect(update.data.converted_transaction_id).toBe(result.transaction.transaction_id);
     expect(update.data.converted_transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
   });
 
@@ -872,7 +909,10 @@ describe('HeldOrdersService M16C conversion (mocked core)', () => {
       payment: { method: PaymentMethod.QRIS },
     } as any);
 
-    expect(result.transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    expect(result.transaction.transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+    // M16G-0A: the held order was already CONVERTED, so this response came from
+    // the validated replay path and must be labelled as such.
+    expect(result.replayed).toBe(true);
     expect(tx.transactions.create).not.toHaveBeenCalled();
     expect(tx.payments.create).not.toHaveBeenCalled();
     expect(tx.product_stocks.updateMany).not.toHaveBeenCalled();
@@ -998,6 +1038,212 @@ describe('HeldOrdersService M16C conversion (mocked core)', () => {
     expect(outerTx.payments.create).toHaveBeenCalledTimes(1);
     expect(outerTx.product_stocks.updateMany).toHaveBeenCalledTimes(1);
     expect(outerTx.stock_movements.createMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('M16G-0A: a serialization loser retries and then reports replayed=true', async () => {
+    const tx = makeTx();
+    const svc = mockTransactionsService(tx);
+
+    // The winner already committed OPEN -> CONVERTED, so this retry reads the
+    // terminal state and must take the validated replay path.
+    tx.held_orders.findFirst.mockResolvedValue(heldOrder({
+      status: 'CONVERTED',
+      converted_transaction_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      converted_at: now,
+    }));
+    tx.transactions.findFirst.mockResolvedValue({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      tenant_id: id.tenant,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      outlet_id: id.outlet,
+      user_id: id.user,
+      cashier_session_id: id.session,
+      customer_id: null,
+      discount: 0n,
+      status: 'COMPLETED',
+      subtotal: 300n,
+      tax: 0n,
+      total: 300n,
+      created_at: now,
+      transaction_items: [{
+        product_id: id.product, quantity: 2, note_snapshot: 'less ice',
+        transaction_item_modifiers: [{ modifier_option_id: id.option }],
+      }],
+      payments: [{ id: 'p1', method: 'QRIS', status: 'PAID', amount: 300n, amount_received: null, change_amount: null }],
+    });
+
+    // Attempt 1 loses the row to the concurrent winner: Postgres 40001 surfaces
+    // as P2034, which is retryable, so the whole conversion runs again.
+    const { service: subject, prisma } = service(tx, svc, { failures: [prismaError('P2034')] });
+
+    const result = await subject.checkout(user, id.order, {
+      expected_version: 1,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      payment: { method: PaymentMethod.QRIS },
+    } as any);
+
+    // Retried exactly once, then succeeded through the replay path.
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(result.replayed).toBe(true);
+    expect(result.transaction.transaction_id).toBe('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+
+    // The loser must not have written a second sale.
+    expect(tx.transactions.create).not.toHaveBeenCalled();
+    expect(tx.payments.create).not.toHaveBeenCalled();
+    expect(tx.product_stocks.updateMany).not.toHaveBeenCalled();
+    expect(tx.stock_movements.createMany).not.toHaveBeenCalled();
+  });
+
+  it('M16G-0A: identical requests produce one original and one replay sharing the canonical transaction', async () => {
+    const tx = makeTx();
+    const svc = mockTransactionsService(tx);
+    const { service: subject } = service(tx, svc);
+
+    const request = {
+      expected_version: 1,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      payment: { method: PaymentMethod.QRIS },
+    } as any;
+
+    // First call: the held order is OPEN, so this request performs the conversion.
+    tx.held_orders.findFirst.mockResolvedValue(heldOrder());
+    const original = await subject.checkout(user, id.order, request);
+
+    // Second call with the same key and payload: the held order is now CONVERTED,
+    // so the same client_transaction_id resolves through the replay path.
+    tx.held_orders.findFirst.mockResolvedValue(heldOrder({
+      status: 'CONVERTED',
+      converted_transaction_id: original.transaction.transaction_id,
+      converted_at: now,
+    }));
+    tx.transactions.findFirst.mockResolvedValue({
+      id: original.transaction.transaction_id,
+      tenant_id: id.tenant,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      outlet_id: id.outlet,
+      user_id: id.user,
+      cashier_session_id: id.session,
+      customer_id: null,
+      discount: 0n,
+      status: 'COMPLETED',
+      subtotal: 300n,
+      tax: 0n,
+      total: 300n,
+      created_at: now,
+      transaction_items: [{
+        product_id: id.product, quantity: 2, note_snapshot: 'less ice',
+        transaction_item_modifiers: [{ modifier_option_id: id.option }],
+      }],
+      payments: [{ id: 'p1', method: 'QRIS', status: 'PAID', amount: 300n, amount_received: null, change_amount: null }],
+    });
+
+    const replay = await subject.checkout(user, id.order, request);
+
+    expect(original.replayed).toBe(false);
+    expect(replay.replayed).toBe(true);
+    // Same canonical transaction for both callers.
+    expect(replay.transaction.transaction_id).toBe(original.transaction.transaction_id);
+    // Exactly one sale exists.
+    expect(tx.transactions.create).toHaveBeenCalledTimes(1);
+    expect(tx.payments.create).toHaveBeenCalledTimes(1);
+    expect(tx.product_stocks.updateMany).toHaveBeenCalledTimes(1);
+    expect(tx.stock_movements.createMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('M16G-0A: a mismatch error carries no success envelope', async () => {
+    const tx = makeTx();
+    const svc = mockTransactionsService(tx);
+    tx.held_orders.findFirst.mockResolvedValue(heldOrder({
+      status: 'CONVERTED',
+      converted_transaction_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      converted_at: now,
+    }));
+    tx.transactions.findFirst.mockResolvedValue({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      tenant_id: id.tenant,
+      client_transaction_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      outlet_id: id.outlet,
+      user_id: id.user,
+      cashier_session_id: id.session,
+      customer_id: null,
+      discount: 0n,
+      status: 'COMPLETED',
+      subtotal: 300n,
+      tax: 0n,
+      total: 300n,
+      created_at: now,
+      transaction_items: [{
+        product_id: id.product, quantity: 2, note_snapshot: 'less ice',
+        transaction_item_modifiers: [{ modifier_option_id: id.option }],
+      }],
+      payments: [{ id: 'p1', method: 'QRIS', status: 'PAID', amount: 300n, amount_received: null, change_amount: null }],
+    });
+
+    const { service: subject } = service(tx, svc);
+
+    const error = await subject.checkout(user, id.order, {
+      expected_version: 1,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      payment: { method: PaymentMethod.QRIS },
+    } as any).then(() => null, (e) => e);
+
+    expect(error).toBeTruthy();
+    expect(error.response).toMatchObject({ error_code: 'IDEMPOTENCY_PAYLOAD_MISMATCH' });
+    // The thrown envelope must not masquerade as a wrapped success.
+    expect(error.transaction).toBeUndefined();
+    expect(error.replayed).toBeUndefined();
+  });
+
+  it('M16G-0A: throws HELD_ORDER_CONVERTED_NO_LINK with no success wrapper when transaction not found', async () => {
+    const tx = makeTx();
+    const svc = mockTransactionsService(tx);
+    tx.held_orders.findFirst.mockResolvedValue(heldOrder({
+      status: 'CONVERTED',
+      converted_transaction_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      converted_at: now,
+    }));
+    tx.transactions.findFirst.mockResolvedValue(null);
+
+    const { service: subject } = service(tx, svc);
+
+    const error = await subject.checkout(user, id.order, {
+      expected_version: 1,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      payment: { method: PaymentMethod.QRIS },
+    } as any).then(() => null, (e) => e);
+
+    expect(error).toBeTruthy();
+    expect(error.response).toMatchObject({ error_code: 'HELD_ORDER_CONVERTED_NO_LINK' });
+    expect(error.transaction).toBeUndefined();
+    expect(error.replayed).toBeUndefined();
+  });
+
+  it('M16G-0A: throws HELD_ORDER_LINK_MISMATCH with no success wrapper when transaction id disagrees', async () => {
+    const tx = makeTx();
+    const svc = mockTransactionsService(tx);
+    tx.held_orders.findFirst.mockResolvedValue(heldOrder({
+      status: 'CONVERTED',
+      converted_transaction_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      converted_at: now,
+    }));
+    tx.transactions.findFirst.mockResolvedValue({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', // different transaction id
+      tenant_id: id.tenant,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    });
+
+    const { service: subject } = service(tx, svc);
+
+    const error = await subject.checkout(user, id.order, {
+      expected_version: 1,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      payment: { method: PaymentMethod.QRIS },
+    } as any).then(() => null, (e) => e);
+
+    expect(error).toBeTruthy();
+    expect(error.response).toMatchObject({ error_code: 'HELD_ORDER_LINK_MISMATCH' });
+    expect(error.transaction).toBeUndefined();
+    expect(error.replayed).toBeUndefined();
   });
 
   it('tenant isolates the conversion', async () => {

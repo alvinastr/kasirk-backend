@@ -66,6 +66,34 @@ function service(tx: any) {
  * 13. Existing offline/sync path behavior remains unchanged.
  */
 describe('TransactionsService M16B extraction regression', () => {
+  describe('M16G-0A: normal POST /transactions response is unchanged', () => {
+    it('returns the canonical transaction at the TOP LEVEL with no replay metadata', async () => {
+      const tx = makeTx();
+      const { service: s } = service(tx);
+      const result: any = await s.create(user as any, input());
+
+      // The normal transaction endpoint must keep returning the canonical
+      // transaction object directly — no `transaction` wrapper, no `replayed`
+      // key. Replay metadata belongs only to the held-order checkout contract.
+      expect(result).not.toHaveProperty('replayed');
+      expect(result).not.toHaveProperty('transaction');
+      expect(result.transaction_id).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+      expect(result.client_transaction_id).toBe('55555555-5555-4555-8555-555555555555');
+      expect(result.status).toBe('COMPLETED');
+      expect(Object.keys(result)).not.toContain('replayed');
+    });
+
+    it('keeps the flat transaction shape on the idempotent transaction retry', async () => {
+      const tx = makeTx();
+      const { service: s } = service(tx);
+      const result: any = await s.create(user as any, input());
+      // Replay of a normal transaction also stays unwrapped.
+      expect(result).not.toHaveProperty('replayed');
+      expect(result).not.toHaveProperty('transaction');
+      expect(result.transaction_id).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    });
+  });
+
   describe('public create() still opens exactly ONE Prisma transaction', () => {
     it('calls prisma.$transaction exactly once and delegates to executeTransactionCore', async () => {
       const tx = makeTx();

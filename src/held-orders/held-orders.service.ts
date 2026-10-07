@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { TransactionsService, type CheckoutDto } from '../transactions/transactions.service';
 import { CheckoutHeldOrderDto } from './dto/checkout-held-order.dto';
+import type { CheckoutHeldOrderResult } from './dto/checkout-held-order-response.dto';
 import type { CreateTransactionItemDto } from '../transactions/dto/create-transaction-item.dto';
 import { Prisma } from '@prisma/client';
 import { plainToInstance } from 'class-transformer';
@@ -201,7 +202,13 @@ export class HeldOrdersService {
    * authorization, closed session, catalog/stock/payment domain errors and
    * unrelated P2002 constraints) fails on the first attempt.
    */
-  async checkout(user: JwtPayload, id: string, input: CheckoutHeldOrderDto) {
+  /**
+   * M16G-0A: returns the wrapped success envelope. `replayed` is decided
+   * inside `convertHeldOrder` from the branch the conversion actually took, so
+   * it is never inferred from client input. Failure semantics are untouched:
+   * every domain error still throws from inside the Serializable transaction.
+   */
+  async checkout(user: JwtPayload, id: string, input: CheckoutHeldOrderDto): Promise<CheckoutHeldOrderResult> {
     const actor = this.actorContext(user);
     if (!isUUID(id)) throw new BadRequestException('Invalid held order ID');
     const orderId = id.toLowerCase();
@@ -256,7 +263,7 @@ export class HeldOrdersService {
    * M16C conversion body. Runs entirely inside the caller's transaction client
    * and never opens a nested transaction.
    */
-  private async convertHeldOrder(tx: Prisma.TransactionClient, actor: JwtPayload, orderId: string, dto: CheckoutHeldOrderDto) {
+  private async convertHeldOrder(tx: Prisma.TransactionClient, actor: JwtPayload, orderId: string, dto: CheckoutHeldOrderDto): Promise<CheckoutHeldOrderResult> {
       // Resolve scope and load held order with normalized items/modifiers
       const scope = await this.readScope(tx, actor);
       const heldOrder = await tx.held_orders.findFirst({
@@ -318,7 +325,11 @@ export class HeldOrdersService {
           payment: dto.payment,
         };
         // Call core for exact request comparison; it will throw on mismatch
-        return this.transactionsService.executeTransactionCore(tx, actor, replayDto, 'V1');
+        const result = await this.transactionsService.executeTransactionCore(tx, actor, replayDto, 'V1');
+        return {
+          transaction: result as Record<string, unknown>,
+          replayed: true,
+        };
       }
 
       // Reject non-OPEN terminal states
@@ -384,7 +395,10 @@ export class HeldOrdersService {
       });
       if (converted.count !== 1) throw new ConflictException({ message: 'Held order changed after claim', error_code: 'HELD_ORDER_RESOURCE_CONFLICT' });
 
-      return result;
+      return {
+        transaction: result as Record<string, unknown>,
+        replayed: false,
+      };
   }
 
   private actorContext(user: JwtPayload) {

@@ -1,7 +1,7 @@
 import {
   Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards, UsePipes, ValidationPipe,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { JwtGuard } from '../auth/jwt.guard';
 import type { JwtPayload } from '../auth/types/jwt-payload.type';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -9,6 +9,10 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CancelHeldOrderDto } from './dto/cancel-held-order.dto';
 import { CheckoutHeldOrderDto } from './dto/checkout-held-order.dto';
+import {
+  CheckoutHeldOrderResponseDto,
+  type CheckoutHeldOrderResult,
+} from './dto/checkout-held-order-response.dto';
 import { CreateHeldOrderDto } from './dto/create-held-order.dto';
 import { QueryHeldOrdersDto } from './dto/query-held-orders.dto';
 import { UpdateHeldOrderDto } from './dto/update-held-order.dto';
@@ -39,5 +43,12 @@ export class HeldOrdersController {
   cancel(@CurrentUser() user: JwtPayload, @Param('id', new ParseUUIDPipe()) id: string, @Body() dto: CancelHeldOrderDto) { return this.heldOrdersService.cancel(user, id, dto); }
 
   @Post(':id/checkout')
-  checkout(@CurrentUser() user: JwtPayload, @Param('id', new ParseUUIDPipe()) id: string, @Body() dto: CheckoutHeldOrderDto) { return this.heldOrdersService.checkout(user, id, dto); }
+  @ApiOkResponse({
+    type: CheckoutHeldOrderResponseDto,
+    description:
+      'Canonical transaction wrapped with replay metadata: replayed=false means this request performed the OPEN -> CONVERTED transition; replayed=true means the held order was already converted and this request returned the validated linked transaction.',
+  })
+  checkout(@CurrentUser() user: JwtPayload, @Param('id', new ParseUUIDPipe()) id: string, @Body() dto: CheckoutHeldOrderDto): Promise<CheckoutHeldOrderResult> {
+    return this.heldOrdersService.checkout(user, id, dto);
+  }
 }

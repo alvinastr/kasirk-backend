@@ -129,6 +129,9 @@ test('M16C Held Order conversion atomicity and rollback', { skip: !connectionStr
     }
 
     async function checkout(holder, hoId, clientTxId, payment, expectedVersion = 1) {
+      // M16G-0A: the service returns { transaction, replayed }. The helper
+      // passes the envelope straight through so each test can assert both the
+      // canonical transaction and the server-authoritative replay flag.
       return holder.checkout(actor, hoId, { expected_version: expectedVersion, client_transaction_id: clientTxId, payment });
     }
 
@@ -252,7 +255,7 @@ test('M16C Held Order conversion atomicity and rollback', { skip: !connectionStr
       await assertRollback(ho.id, clientTxId);
     });
 
-    // 6) Successful conversion persists everything together
+    // 6) successful conversion persists everything together
     await t.test('successful conversion commits all rows atomically', async () => {
       const session = await makeSession();
       const p = await product(10, 1000);
@@ -260,14 +263,19 @@ test('M16C Held Order conversion atomicity and rollback', { skip: !connectionStr
       const clientTxId = randomUUID();
 
       const result = await checkout(heldOrdersService, ho.id, clientTxId, { method: 'CASH', amount: 2200 });
-      assert.equal(result.status, 'COMPLETED');
+
+      // M16G-0A: fresh conversion -> replayed=false, wrapped canonical transaction.
+      assert.equal(result.replayed, false, 'fresh conversion must report replayed=false');
+      assert.deepEqual(Object.keys(result).sort(), ['replayed', 'transaction'], 'envelope carries exactly transaction and replayed');
+      assert.equal(result.transaction.replayed, undefined, 'replay metadata must not leak into the canonical transaction');
+      assert.equal(result.transaction.status, 'COMPLETED');
 
       const hoAfter = await db.held_orders.findUnique({ where: { id: ho.id } });
       assert.equal(hoAfter.status, 'CONVERTED');
-      assert.equal(hoAfter.converted_transaction_id, result.transaction_id);
+      assert.equal(hoAfter.converted_transaction_id, result.transaction.transaction_id);
       assert.ok(hoAfter.converted_at instanceof Date);
 
-      const tx = await db.transactions.findUnique({ where: { id: result.transaction_id }, include: { transaction_items: true, payments: true } });
+      const tx = await db.transactions.findUnique({ where: { id: result.transaction.transaction_id }, include: { transaction_items: true, payments: true } });
       assert.ok(tx);
       assert.equal(tx.tenant_id, tenant.id);
       assert.equal(tx.outlet_id, outlet.id);
@@ -283,11 +291,40 @@ test('M16C Held Order conversion atomicity and rollback', { skip: !connectionStr
       const stock = await db.product_stocks.findFirst({ where: { product_id: p.id, outlet_id: outlet.id } });
       assert.equal(stock.stock, 8);
 
-      const movements = await db.stock_movements.findMany({ where: { reference_id: result.transaction_id } });
+      const movements = await db.stock_movements.findMany({ where: { reference_id: result.transaction.transaction_id } });
       assert.equal(movements.length, 1);
       assert.equal(movements[0].quantity, -2);
       assert.equal(movements[0].type, 'SALE');
       assert.equal(movements[0].reference_type, 'TRANSACTION');
+    });
+
+    // 6b) M16G-0A: idempotent retry against an already-CONVERTED held order
+    await t.test('idempotent retry reports replayed=true with the same canonical transaction', async () => {
+      const session = await makeSession();
+      const p = await product(10, 1000);
+      const ho = await makeHeldOrder(session.id, [{ productId: p.id, qty: 2, basePrice: 1000, effectivePrice: 1000, lineSubtotal: 2000, lineTotal: 2000, name: 'P', sku: 'S' }]);
+      const clientTxId = randomUUID();
+
+      const original = await checkout(heldOrdersService, ho.id, clientTxId, { method: 'CASH', amount: 2200 });
+      assert.equal(original.replayed, false, 'first call performs the conversion');
+
+      const replay = await checkout(heldOrdersService, ho.id, clientTxId, { method: 'CASH', amount: 2200 });
+      assert.equal(replay.replayed, true, 'exact retry must report replayed=true');
+      assert.equal(replay.transaction.transaction_id, original.transaction.transaction_id, 'replay returns the same canonical transaction');
+
+      // Replay must not create any new sale side effects.
+      const txCount = await db.transactions.count({ where: { client_transaction_id: clientTxId, tenant_id: tenant.id } });
+      assert.equal(txCount, 1, 'replay creates no second transaction');
+      const paymentCount = await db.payments.count({ where: { tenant_id: tenant.id, transaction_id: original.transaction.transaction_id } });
+      assert.equal(paymentCount, 1, 'replay creates no second payment');
+      const stock = await db.product_stocks.findFirst({ where: { product_id: p.id, outlet_id: outlet.id } });
+      assert.equal(stock.stock, 8, 'stock decremented exactly once across original + replay');
+      const movementCount = await db.stock_movements.count({ where: { reference_id: original.transaction.transaction_id } });
+      assert.equal(movementCount, 1, 'replay creates no second stock movement');
+
+      const hoAfter = await db.held_orders.findUnique({ where: { id: ho.id } });
+      assert.equal(hoAfter.status, 'CONVERTED');
+      assert.equal(hoAfter.converted_transaction_id, original.transaction.transaction_id);
     });
 
     // 7) Concurrent conversion race
@@ -304,17 +341,54 @@ test('M16C Held Order conversion atomicity and rollback', { skip: !connectionStr
 
       const fulfilled = [r1, r2].filter(r => r.status === 'fulfilled');
       assert.equal(fulfilled.length, 2, 'winner and exact idempotent replay must both succeed');
-      assert.equal(fulfilled[0].value.transaction_id, fulfilled[1].value.transaction_id);
+
+      // M16G-0A: exactly one caller performed the conversion, the other came
+      // back through the validated replay path. Both share one canonical
+      // transaction id, so physical side effects stay exactly-once.
+      const flags = fulfilled.map(r => r.value.replayed).sort();
+      assert.deepEqual(flags, [false, true], 'exactly one original (false) and one replay (true)');
+      assert.equal(fulfilled[0].value.transaction.transaction_id, fulfilled[1].value.transaction.transaction_id);
 
       const hoAfter = await db.held_orders.findUnique({ where: { id: ho.id } });
       assert.equal(hoAfter.status, 'CONVERTED');
-      assert.equal(hoAfter.converted_transaction_id, fulfilled[0].value.transaction_id);
+      assert.equal(hoAfter.converted_transaction_id, fulfilled[0].value.transaction.transaction_id);
 
       const stock = await db.product_stocks.findFirst({ where: { product_id: p.id, outlet_id: outlet.id } });
       assert.equal(stock.stock, 8, 'stock deducted exactly once');
 
       const txCount = await db.transactions.count({ where: { client_transaction_id: clientTxId, tenant_id: tenant.id } });
       assert.equal(txCount, 1, 'exactly one transaction created');
+
+      const paymentCount = await db.payments.count({ where: { transaction_id: fulfilled[0].value.transaction.transaction_id } });
+      assert.equal(paymentCount, 1, 'exactly one payment created');
+
+      const movementCount = await db.stock_movements.count({ where: { reference_id: fulfilled[0].value.transaction.transaction_id } });
+      assert.equal(movementCount, 1, 'exactly one stock movement created');
+    });
+
+    // 8) M16G-0A: normal POST /transactions response keeps its flat shape
+    await t.test('normal transaction create is not wrapped and carries no replay metadata', async () => {
+      const session = await makeSession();
+      const p = await product(10, 1000);
+      const clientTxId = randomUUID();
+
+      const result = await transactionsService.create(actor, {
+        outlet_id: outlet.id,
+        cashier_session_id: session.id,
+        client_transaction_id: clientTxId,
+        items: [{ product_id: p.id, quantity: 2 }],
+        payment: { method: 'QRIS' },
+        discount: 0,
+        customer_id: null,
+      });
+
+      // The canonical transaction stays at the top level; the M16G-0A envelope
+      // belongs only to the held-order checkout contract.
+      assert.equal(result.replayed, undefined, 'normal transaction must not report replayed');
+      assert.equal(result.transaction, undefined, 'normal transaction must not be wrapped');
+      assert.ok(result.transaction_id, 'normal transaction keeps its flat transaction_id');
+      assert.equal(result.status, 'COMPLETED');
+      assert.equal(result.client_transaction_id, clientTxId);
     });
 
   } finally {
