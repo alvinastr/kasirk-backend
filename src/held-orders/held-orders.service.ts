@@ -2,10 +2,16 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { TransactionsService, type CheckoutDto } from '../transactions/transactions.service';
+import { CheckoutHeldOrderDto } from './dto/checkout-held-order.dto';
+import type { CreateTransactionItemDto } from '../transactions/dto/create-transaction-item.dto';
 import { Prisma } from '@prisma/client';
 import { plainToInstance } from 'class-transformer';
 import { isUUID, validate } from 'class-validator';
@@ -45,7 +51,10 @@ type ResolvedItem = {
 
 @Injectable()
 export class HeldOrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly transactionsService: TransactionsService,
+  ) {}
 
   async create(user: JwtPayload, input: CreateHeldOrderDto) {
     const actor = this.actorContext(user);
@@ -175,6 +184,207 @@ export class HeldOrdersService {
       if (!result) throw new ConflictException({ message: 'Held order changed during cancellation', error_code: 'HELD_ORDER_RESOURCE_CONFLICT' });
       return this.toDetail(result);
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+  }
+
+  /**
+   * M16C: the caller-owned boundary for held-order conversion. Owns DTO
+   * validation, the bounded retry loop and the Prisma -> HTTP error mapping;
+   * the sale logic itself stays in `TransactionsService.executeTransactionCore`
+   * so the next caller decides its own retry policy for the same unit of work.
+   *
+   * Only genuinely retryable failures are retried, and only three times:
+   * - P2034 serialization/write conflicts raised by this Serializable attempt.
+   * - P2002 on the transaction idempotency unique index, where the next attempt
+   *   re-runs the whole conversion and the core resolves the canonical
+   *   existing transaction instead of inserting a second sale.
+   * Everything else (held-order version/state conflicts, tenant/outlet/session
+   * authorization, closed session, catalog/stock/payment domain errors and
+   * unrelated P2002 constraints) fails on the first attempt.
+   */
+  async checkout(user: JwtPayload, id: string, input: CheckoutHeldOrderDto) {
+    const actor = this.actorContext(user);
+    if (!isUUID(id)) throw new BadRequestException('Invalid held order ID');
+    const orderId = id.toLowerCase();
+    const dto = await this.validateDto(CheckoutHeldOrderDto, input);
+
+    const M16C_MAX_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= M16C_MAX_ATTEMPTS; attempt++) {
+      try {
+        // One outer Serializable transaction per attempt: claim, sale and the
+        // terminal transition commit or roll back as a single unit.
+        return await this.prisma.$transaction(
+          (tx) => this.convertHeldOrder(tx, actor, orderId, dto),
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if (error instanceof HttpException) throw error;
+        if (error instanceof Prisma.PrismaClientKnownRequestError) {
+          if (error.code === 'P2034' || this.isTransactionIdempotencyConflict(error)) {
+            if (attempt < M16C_MAX_ATTEMPTS) continue;
+            throw new ServiceUnavailableException({ message: 'Please retry with the same client_transaction_id', error_code: 'TRANSACTION_RETRY_REQUIRED' });
+          }
+          if (error.code === 'P2003' || error.code === 'P2025') {
+            throw new ConflictException({ message: 'A conversion resource changed; please retry', error_code: 'TRANSACTION_RESOURCE_CONFLICT' });
+          }
+        }
+        throw new InternalServerErrorException({ message: 'Unable to convert held order', error_code: 'HELD_ORDER_CONVERSION_FAILED' });
+      }
+    }
+    throw new ServiceUnavailableException({ message: 'Please retry with the same client_transaction_id', error_code: 'TRANSACTION_RETRY_REQUIRED' });
+  }
+
+  /**
+   * Mirrors the idempotency arbiter in `TransactionsService.createInternal`: the
+   * retryable P2002 is the `(tenant_id, client_transaction_id)` uniqueness path
+   * only. Any other unique constraint is a real defect and must not be retried.
+   */
+  private isTransactionIdempotencyConflict(error: Prisma.PrismaClientKnownRequestError) {
+    if (error.code !== 'P2002') return false;
+    const adapter = error.meta?.driverAdapterError as {
+      cause?: { constraint?: { index?: string; fields?: string[] } };
+    } | undefined;
+    const target = error.meta?.target ?? adapter?.cause?.constraint?.index ??
+      adapter?.cause?.constraint?.fields;
+    if (target === 'uq_transactions_client_id') return true;
+    return Array.isArray(target) &&
+      target.length === 2 &&
+      target.includes('tenant_id') &&
+      target.includes('client_transaction_id');
+  }
+
+  /**
+   * M16C conversion body. Runs entirely inside the caller's transaction client
+   * and never opens a nested transaction.
+   */
+  private async convertHeldOrder(tx: Prisma.TransactionClient, actor: JwtPayload, orderId: string, dto: CheckoutHeldOrderDto) {
+      // Resolve scope and load held order with normalized items/modifiers
+      const scope = await this.readScope(tx, actor);
+      const heldOrder = await tx.held_orders.findFirst({
+        where: { ...scope, id: orderId },
+        include: {
+          held_order_items: {
+            include: { held_order_item_modifiers: { orderBy: { created_at: 'asc' } } },
+            orderBy: [{ display_order: 'asc' }, { id: 'asc' }],
+          },
+        },
+      });
+
+      if (!heldOrder) throw new NotFoundException({ message: 'Held order not found', error_code: 'HELD_ORDER_NOT_FOUND' });
+
+      // Idempotent replay: if already converted, verify the linked transaction matches the idempotency key
+      if (heldOrder.status === 'CONVERTED') {
+        const existing = await tx.transactions.findFirst({
+          where: { tenant_id: actor.tenant_id, client_transaction_id: dto.client_transaction_id.toLowerCase() },
+          select: {
+            id: true,
+            tenant_id: true,
+            client_transaction_id: true,
+            outlet_id: true,
+            user_id: true,
+            cashier_session_id: true,
+            customer_id: true,
+            discount: true,
+            status: true,
+            subtotal: true,
+            tax: true,
+            total: true,
+            created_at: true,
+            transaction_items: {
+              select: {
+                id: true,
+                product_id: true,
+                quantity: true,
+                note_snapshot: true,
+                transaction_item_modifiers: { select: { modifier_option_id: true } },
+              },
+            },
+            payments: { select: { id: true, method: true, status: true, amount: true, amount_received: true, change_amount: true, paid_at: true } },
+          },
+        });
+        if (!existing) throw new ConflictException({ message: 'Held order is converted but linked transaction not found', error_code: 'HELD_ORDER_CONVERTED_NO_LINK' });
+        if (existing.id !== heldOrder.converted_transaction_id) throw new ConflictException({ message: 'Held order converted to a different transaction', error_code: 'HELD_ORDER_LINK_MISMATCH' });
+        // Rebuild the logical checkout request from the existing transaction and compare via core
+        const replayDto: CheckoutDto = {
+          client_transaction_id: dto.client_transaction_id.toLowerCase(),
+          outlet_id: heldOrder.outlet_id,
+          cashier_session_id: heldOrder.origin_cashier_session_id,
+          discount: Number(existing.discount),
+          items: existing.transaction_items.map((item) => ({
+            product_id: item.product_id,
+            quantity: item.quantity,
+            modifier_option_ids: item.transaction_item_modifiers.map((m) => m.modifier_option_id).filter((id): id is string => id !== null),
+            ...(item.note_snapshot !== null ? { note: item.note_snapshot } : {}),
+          })),
+          payment: dto.payment,
+        };
+        // Call core for exact request comparison; it will throw on mismatch
+        return this.transactionsService.executeTransactionCore(tx, actor, replayDto, 'V1');
+      }
+
+      // Reject non-OPEN terminal states
+      if (heldOrder.status !== 'OPEN') {
+        throw new ConflictException({ message: 'Held order is not open', error_code: 'HELD_ORDER_NOT_OPEN' });
+      }
+      if (heldOrder.version !== dto.expected_version) {
+        throw new ConflictException({ message: 'Held order version is stale', error_code: 'HELD_ORDER_VERSION_CONFLICT' });
+      }
+
+      // Validate outlet access for cashier
+      if (actor.role === 'CASHIER') {
+        const principal = await tx.users.findFirst({ where: { id: actor.sub, tenant_id: actor.tenant_id }, select: { outlet_id: true } });
+        if (!principal?.outlet_id || principal.outlet_id !== heldOrder.outlet_id) {
+          throw new ForbiddenException({ message: 'Outlet access denied', error_code: 'OUTLET_ACCESS_DENIED' });
+        }
+      }
+
+      // Validate origin cashier session: must be OPEN, closed_at = null, same tenant, same outlet, same user
+      const session = await tx.cashier_sessions.findFirst({
+        where: { id: heldOrder.origin_cashier_session_id, tenant_id: actor.tenant_id, status: 'OPEN', closed_at: null },
+        select: { id: true, outlet_id: true, user_id: true },
+      });
+      if (!session) throw new ForbiddenException({ message: 'Origin cashier session is not open or closed', error_code: 'INVALID_CASHIER_SESSION' });
+      if (session.outlet_id !== heldOrder.outlet_id) throw new ForbiddenException({ message: 'Origin cashier session outlet does not match held order outlet', error_code: 'SESSION_OUTLET_MISMATCH' });
+      if (session.user_id !== heldOrder.cashier_user_id) throw new ForbiddenException({ message: 'Origin cashier session user does not match held order cashier', error_code: 'SESSION_USER_MISMATCH' });
+
+      // Claim the held order: increment version atomically, keep status OPEN
+      const claimed = await tx.held_orders.updateMany({
+        where: { id: orderId, tenant_id: actor.tenant_id, status: 'OPEN', version: dto.expected_version },
+        data: { version: { increment: 1 } },
+      });
+      if (claimed.count !== 1) throw new ConflictException({ message: 'Held order version is stale', error_code: 'HELD_ORDER_VERSION_CONFLICT' });
+
+      // Build CheckoutDto from held order (no snapshot prices)
+      const items: CreateTransactionItemDto[] = heldOrder.held_order_items.map((item) => ({
+        product_id: item.product_id,
+        quantity: item.quantity,
+        modifier_option_ids: item.held_order_item_modifiers.map((m) => m.modifier_option_id).filter((id): id is string => id !== null),
+        ...(item.note_snapshot !== null ? { note: item.note_snapshot } : {}),
+      }));
+
+      const checkoutDto: CheckoutDto = {
+        client_transaction_id: dto.client_transaction_id.toLowerCase(),
+        outlet_id: heldOrder.outlet_id,
+        cashier_session_id: heldOrder.origin_cashier_session_id,
+        discount: 0,
+        items,
+        payment: dto.payment,
+      };
+
+      // Execute the authoritative V1 transaction core with the same tx
+      const result = await this.transactionsService.executeTransactionCore(tx, actor, checkoutDto, 'V1');
+
+      // Terminal update: mark held order CONVERTED with linked transaction id and timestamp
+      const converted = await tx.held_orders.updateMany({
+        where: { id: orderId, tenant_id: actor.tenant_id, status: 'OPEN', version: dto.expected_version + 1 },
+        data: {
+          status: 'CONVERTED',
+          converted_transaction_id: result.transaction_id,
+          converted_at: new Date(),
+        },
+      });
+      if (converted.count !== 1) throw new ConflictException({ message: 'Held order changed after claim', error_code: 'HELD_ORDER_RESOURCE_CONFLICT' });
+
+      return result;
   }
 
   private actorContext(user: JwtPayload) {
