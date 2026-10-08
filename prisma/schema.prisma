@@ -119,6 +119,7 @@ model outlets {
   users             users[]
   cashier_sessions  cashier_sessions[]
   held_orders       held_orders[]
+  receipt_settings  receipt_settings?
 
   @@unique([id, tenant_id], map: "uq_outlets_id_tenant")
   @@index([tenant_id], map: "idx_outlets_tenant_id")
@@ -347,6 +348,34 @@ model tenants {
   held_orders                held_orders[]
   held_order_items           held_order_items[]
   held_order_item_modifiers  held_order_item_modifiers[]
+  receipt_settings           receipt_settings[]
+}
+
+/// An absent row means the application synthesizes values from tenant/outlet data.
+/// The migration adds a positive template_version check Prisma cannot represent.
+model receipt_settings {
+  tenant_id              String   @db.Uuid
+  outlet_id              String   @db.Uuid
+  header_store_name      String   @db.VarChar(100)
+  header_outlet_name     String   @db.VarChar(100)
+  header_address         String?  @db.VarChar(500)
+  header_phone           String?  @db.VarChar(30)
+  header_additional_text String?  @db.VarChar(500)
+  show_sku               Boolean  @default(true)
+  show_modifiers         Boolean  @default(true)
+  show_item_notes        Boolean  @default(true)
+  show_cashier           Boolean  @default(true)
+  show_customer          Boolean  @default(true)
+  footer_thank_you_text  String   @default("Terima kasih") @db.VarChar(200)
+  footer_promo_text      String?  @db.VarChar(500)
+  template_version       Int      @default(1)
+  created_at             DateTime @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  tenants                tenants  @relation(fields: [tenant_id], references: [id], onDelete: Restrict, onUpdate: NoAction, map: "fk_receipt_settings_tenant")
+  outlets                outlets  @relation(fields: [outlet_id, tenant_id], references: [id, tenant_id], onDelete: Cascade, onUpdate: NoAction, map: "fk_receipt_settings_outlet_same_tenant")
+
+  @@id([tenant_id, outlet_id], map: "receipt_settings_pkey")
+  @@unique([outlet_id, tenant_id], map: "uq_receipt_settings_outlet_tenant")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.

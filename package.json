@@ -32,6 +32,7 @@
     "test:reports": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --require ts-node/register/transpile-only --test test/reports.integration.cjs",
     "test:customers": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/customers.integration.cjs",
     "test:receipts": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/receipts.integration.cjs",
+    "test:receipt-settings": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --require ts-node/register/transpile-only --test test/receipt-settings.integration.cjs",
     "test:shifts": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/shifts.integration.cjs",
     "test:sync": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/sync.integration.cjs",
     "test:optional-stock": "TS_NODE_PROJECT=test/tsconfig.hardening.json node --env-file=.env --require ts-node/register/transpile-only --test test/optional-stock.integration.cjs",

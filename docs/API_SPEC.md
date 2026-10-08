@@ -1555,6 +1555,51 @@ Android POS
 
 ---
 
+# 25A. Outlet Receipt Template Settings (M17A)
+
+Pengaturan template struk disimpan per outlet. Pengaturan printer tetap lokal di perangkat dan tidak termasuk kontrak ini. Endpoint struk transaksi yang sudah ada tidak berubah.
+
+## 25A.1 Get Effective Receipt Settings
+
+```http
+GET /outlets/:outletId/receipt-settings
+```
+
+Roles: `OWNER`, `ADMIN`, `CASHIER`. CASHIER hanya dapat membaca outlet yang terikat pada user tersebut.
+
+Jika row belum ada, backend mengembalikan default efektif tanpa menulis ke database: nama tenant, nama/alamat outlet, seluruh visibility flag `true`, `footer_thank_you_text` bernilai `Terima kasih`, `template_version` bernilai `1`, text opsional dan timestamp bernilai `null`.
+
+## 25A.2 Fully Replace Receipt Settings
+
+```http
+PUT /outlets/:outletId/receipt-settings
+```
+
+Roles: `OWNER`, `ADMIN`.
+
+PUT adalah full replacement. Seluruh field editable wajib dikirim. Field text nullable tetap wajib hadir dengan string valid atau `null` eksplisit.
+
+```json
+{
+  "header_store_name": "KasirKita Store",
+  "header_outlet_name": "Outlet Pusat",
+  "header_address": "Jl. Utama 1",
+  "header_phone": "08123456789",
+  "header_additional_text": null,
+  "show_sku": true,
+  "show_modifiers": true,
+  "show_item_notes": true,
+  "show_cashier": true,
+  "show_customer": true,
+  "footer_thank_you_text": "Terima kasih",
+  "footer_promo_text": null
+}
+```
+
+`tenant_id` selalu berasal dari JWT dan ditolak bila dikirim pada body. `template_version` juga ditolak pada request karena merupakan field response-only yang ditetapkan server ke `1`. String di-trim dan whitespace-only ditolak. PUT melakukan upsert atomik pada key `(tenant_id, outlet_id)`, mengganti seluruh nilai editable, dan mengembalikan row efektif beserta `tenant_id`, `outlet_id`, `template_version`, `created_at`, dan `updated_at`.
+
+---
+
 # 26. Golden Rules
 
 1. Client tidak menentukan `tenant_id`.
@@ -1597,6 +1642,7 @@ Payment Webhook Contract
 Daily Sales Report
 RBAC
 Tenant Isolation
+Outlet Receipt Template Settings
 ```
 
 ### Deferred
@@ -1612,7 +1658,6 @@ Promotions
 Discount Rules
 Advanced Reporting
 Refund Workflow
-Receipt Printing API
 Barcode API
 ```
 
