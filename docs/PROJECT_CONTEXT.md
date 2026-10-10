@@ -128,7 +128,7 @@ Total Sales - Total Cost of Products Sold
 The system is planned to support:
 
 - QRIS.
-- E-wallet payment methods.
+- EDC (record-only external physical terminal acceptance).
 - Dynamic QR codes.
 - Payment status:
   - SUCCESS
@@ -598,7 +598,7 @@ payments
 ---------
 id                  UUID PK
 transaction_id      UUID FK → transactions.id
-method              ENUM
+method              VARCHAR(20) NOT NULL
 status              ENUM
 amount              INTEGER
 provider             VARCHAR NULL
@@ -608,9 +608,17 @@ created_at           TIMESTAMP
 updated_at           TIMESTAMP
 ```
 
+`payments.method` is constrained by the `chk_payments_method` CHECK constraint
+and currently accepts only `CASH`, `QRIS`, and `EDC`. It is not a PostgreSQL
+enum, and `E_WALLET` is not part of the current contract; unknown values are
+rejected.
+
 Payment statuses should represent the actual payment state.
 
-Do not allow the client to arbitrarily mark a payment as successful without backend/provider verification.
+For future provider-integrated payments, do not allow the client to arbitrarily
+mark a payment as successful without backend/provider verification. The current
+record-only QRIS/EDC flow requires cashier confirmation of the external payment
+before checkout and has no provider callback.
 
 ---
 

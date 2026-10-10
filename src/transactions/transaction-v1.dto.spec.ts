@@ -73,6 +73,12 @@ describe('CreateTransactionDto V1', () => {
     await expect(errors(payload({ payment: { method: 'QRIS', amount_received: 10_000 } }))).resolves.not.toHaveLength(0);
   });
 
+  it('accepts method-only EDC and rejects typed cash fields on EDC', async () => {
+    await expect(errors(payload({ payment: { method: 'EDC' } }))).resolves.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'EDC', amount: 10_000 } }))).resolves.not.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'EDC', amount_received: 10_000 } }))).resolves.not.toHaveLength(0);
+  });
+
   it('rejects non-integer, negative, and explicit-null cash tender fields', async () => {
     await expect(errors(payload({ payment: { method: 'CASH', amount_received: 10.5 } }))).resolves.not.toHaveLength(0);
     await expect(errors(payload({ payment: { method: 'CASH', amount_received: -1 } }))).resolves.not.toHaveLength(0);
@@ -104,5 +110,6 @@ describe('CreateTransactionDto V1', () => {
   it('rejects client supplied change_amount as an unknown field', async () => {
     await expect(errors(payload({ payment: { method: 'CASH', amount_received: 10_000, change_amount: 0 } }))).resolves.not.toHaveLength(0);
     await expect(errors(payload({ payment: { method: 'QRIS', change_amount: 0 } }))).resolves.not.toHaveLength(0);
+    await expect(errors(payload({ payment: { method: 'EDC', change_amount: 0 } }))).resolves.not.toHaveLength(0);
   });
 });

@@ -40,11 +40,9 @@ CREATE TYPE transaction_status AS ENUM (
     'VOID'
 );
 
-CREATE TYPE payment_method AS ENUM (
-    'CASH',
-    'QRIS',
-    'E_WALLET'
-);
+-- payments.method is VARCHAR(20), constrained below by chk_payments_method.
+-- It is intentionally not a PostgreSQL enum so additive methods use a
+-- constraint migration without rewriting the payments column.
 
 CREATE TYPE payment_status AS ENUM (
     'PENDING',
@@ -371,7 +369,7 @@ CREATE TABLE payments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id UUID NOT NULL,
     transaction_id UUID NOT NULL,
-    method payment_method NOT NULL,
+    method VARCHAR(20) NOT NULL,
     status payment_status NOT NULL DEFAULT 'PENDING',
     amount INTEGER NOT NULL,
     provider VARCHAR(50),
@@ -394,6 +392,9 @@ CREATE TABLE payments (
 
     CONSTRAINT uq_payments_id_tenant
         UNIQUE (id, tenant_id),
+
+    CONSTRAINT chk_payments_method
+        CHECK (method IN ('CASH', 'QRIS', 'EDC')),
 
     CONSTRAINT ck_payments_amount
         CHECK (amount > 0),
@@ -432,7 +433,6 @@ CREATE TABLE stock_movements (
         REFERENCES tenants(id)
         ON UPDATE CASCADE
         ON DELETE RESTRICT,
-
     CONSTRAINT fk_stock_movements_outlet_same_tenant
         FOREIGN KEY (outlet_id, tenant_id)
         REFERENCES outlets(id, tenant_id)

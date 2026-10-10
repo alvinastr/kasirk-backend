@@ -3,8 +3,6 @@
 
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { readFileSync } = require('node:fs');
-const { join } = require('node:path');
 const { test } = require('node:test');
 const { Client } = require('pg');
 const { PrismaClient } = require('@prisma/client');
@@ -14,6 +12,7 @@ const { PrismaPg } = require('@prisma/adapter-pg');
 const { ShiftsService } = require('../src/shifts/shifts.service');
 const { HeldOrdersService } = require('../src/held-orders/held-orders.service');
 const { TransactionsService } = require('../src/transactions/transactions.service');
+const { applyRepositoryMigrations, assertLatestMigrationApplied } = require('./helpers/test-migrations.cjs');
 
 const connectionString = process.env.SHIFT_TEST_DATABASE_URL || process.env.DATABASE_URL;
 
@@ -27,28 +26,11 @@ test('M16D Block Shift Close When OPEN Held Orders Exist', { skip: !connectionSt
   let heldOrdersService;
   let transactionsService;
 
-  const MIGRATIONS = [
-    '20260914000000_baseline',
-    '20260914000100_transaction_tenant_integrity',
-    '20260915000000_optional_tenant_tax',
-    '20260915010000_add_customers',
-    '20260915020000_add_cashier_sessions',
-    '20260918000000_add_product_track_stock',
-    '20260926000000_auth_v2_schema_preparation',
-    '20260926010000_add_device_session_refresh_hash_unique',
-    '20261003000000_v1_m1_database_foundation',
-    '20261003010000_v1_m4_transaction_item_note_snapshot',
-    '20261003020000_v1_m6_non_reconciling_shift_close',
-    '20261006182702_held_orders_m16a',
-  ];
-
   try {
     await admin.query(`CREATE SCHEMA "${schema}"`);
     await admin.query(`SET search_path TO "${schema}"`);
-    for (const name of MIGRATIONS) {
-      const sql = readFileSync(join(__dirname, '../prisma/migrations', name, 'migration.sql'), 'utf8').replaceAll('"public"', `"${schema}"`);
-      await admin.query(sql);
-    }
+    const migrationNames = await applyRepositoryMigrations(admin, schema);
+    await assertLatestMigrationApplied(admin, migrationNames);
 
     // Prisma's adapter schema scopes generated ORM queries, but raw SQL still
     // resolves through PostgreSQL search_path. Point both at the disposable

@@ -2,8 +2,6 @@
 // The test creates and drops only a random PostgreSQL schema.
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { existsSync, readFileSync, readdirSync } = require('node:fs');
-const { join } = require('node:path');
 const { test } = require('node:test');
 const { ValidationPipe } = require('@nestjs/common');
 const { JwtService } = require('@nestjs/jwt');
@@ -14,6 +12,7 @@ const { Client } = require('pg');
 const request = require('supertest');
 const { AppModule } = require('../src/app.module');
 const { PrismaService } = require('../src/prisma/prisma.service');
+const { applyRepositoryMigrations, assertLatestMigrationApplied } = require('./helpers/test-migrations.cjs');
 
 const connectionString =
   process.env.SHIFT_TEST_DATABASE_URL || process.env.DATABASE_URL;
@@ -28,19 +27,12 @@ test('Shift HTTP API', { skip: !connectionString }, async (t) => {
   try {
     await adminConnection.query(`CREATE SCHEMA "${schema}"`);
     await adminConnection.query(`SET search_path TO "${schema}"`);
-    const migrationsDirectory = join(__dirname, '../prisma/migrations');
-    for (const name of readdirSync(migrationsDirectory).sort()) {
-      const migrationFile = join(migrationsDirectory, name, 'migration.sql');
-      if (!existsSync(migrationFile)) continue;
-      const sql = readFileSync(migrationFile, 'utf8').replaceAll(
-        '"public"',
-        `"${schema}"`,
-      );
-      await adminConnection.query(sql);
-    }
+    const migrationNames = await applyRepositoryMigrations(adminConnection, schema);
+    await assertLatestMigrationApplied(adminConnection, migrationNames);
 
+    const schemaConnectionString = `${connectionString}${connectionString.includes('?') ? '&' : '?'}options=-c%20search_path%3D${schema}`;
     db = new PrismaClient({
-      adapter: new PrismaPg({ connectionString }, { schema }),
+      adapter: new PrismaPg({ connectionString: schemaConnectionString }, { schema }),
     });
     const testingModule = await Test.createTestingModule({
       imports: [AppModule],

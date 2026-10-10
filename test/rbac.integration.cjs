@@ -86,6 +86,7 @@ test('RBAC protects existing endpoints', async (t) => {
             ['/transactions', {
                 client_transaction_id: randomUUID(),
                 outlet_id: outletId,
+                cashier_session_id: randomUUID(),
                 items: [{ product_id: productId, quantity: 1 }],
                 payment: { method: 'CASH', amount: 100 },
             }],

@@ -67,6 +67,12 @@ describe('ReceiptsService M5 payment compatibility', () => {
     expect(result.payment).toEqual(expect.objectContaining({ method: 'QRIS', amount_received: null, change_amount: null }));
   });
 
+  it('preserves record-only EDC with null change', async () => {
+    const result = await receipt({ method: 'EDC', amount: 20_000n, amount_received: null, change_amount: null });
+    expect(result.change).toBeNull();
+    expect(result.payment).toEqual(expect.objectContaining({ method: 'EDC', amount_received: null, change_amount: null }));
+  });
+
   it('loads legacy product fallback in one tenant-scoped lookup and preserves historical unit price', async () => {
     const transaction = record({});
     transaction.transaction_items = [{

@@ -378,7 +378,7 @@ Merepresentasikan pembayaran sebuah transaksi.
 
 - `id`: UUID PK
 - `transaction_id`: UUID FK → `transactions.id`
-- `method`: ENUM
+- `method`: VARCHAR(20), CHECK `CASH | QRIS | EDC`
 - `status`: ENUM
 - `amount`: INTEGER
 - `provider`: VARCHAR NULL
@@ -394,7 +394,7 @@ V1:
 ```text
 CASH
 QRIS
-E_WALLET
+EDC
 ```
 
 Metode lain dapat ditambahkan kemudian.
@@ -419,7 +419,8 @@ Transaction 1 ─── N Payment
 
 Client tidak boleh menentukan status pembayaran sebagai `PAID` secara sepihak.
 
-Untuk payment provider:
+Untuk future payment-provider integration (di luar kontrak QRIS/EDC record-only
+M18A):
 
 ```text
 Payment Request

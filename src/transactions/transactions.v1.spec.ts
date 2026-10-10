@@ -314,6 +314,12 @@ describe('TransactionsService M7 detail', () => {
     expect(tx.payments.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ method: PaymentMethod.QRIS, amount: 300n, amount_received: null, change_amount: null }) }));
     expect(result.change).toBeNull();
   });
+  it('persists EDC as settled total with null received and change', async () => {
+    const tx = makeTx(); tx.transactions.update.mockResolvedValue(response({ payments: [{ id: 'p', method: 'EDC', status: 'PAID', amount: 300n, amount_received: null, change_amount: null, paid_at: new Date() }] }));
+    const { service: s } = service(tx); const result = await s.create(user as any, input({ payment: { method: PaymentMethod.EDC } }));
+    expect(tx.payments.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ method: PaymentMethod.EDC, amount: 300n, amount_received: null, change_amount: null }) }));
+    expect(result.change).toBeNull();
+  });
   it('rejects client-supplied change_amount', async () => {
     const tx = makeTx(); const { service: s } = service(tx);
     await expect(s.create(user as any, input({ payment: { method: PaymentMethod.CASH, amount_received: 500, change_amount: 200 } }))).rejects.toBeInstanceOf(BadRequestException);

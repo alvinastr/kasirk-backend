@@ -20,7 +20,7 @@ class PaymentTransportShapeConstraint implements ValidatorConstraintInterface {
             const hasAmountReceived = p.amount_received !== undefined;
             return hasLegacyAmount !== hasAmountReceived;
         }
-        if (p.method === PaymentMethod.QRIS) {
+        if (p.method === PaymentMethod.QRIS || p.method === PaymentMethod.EDC) {
             return p.amount === undefined && p.amount_received === undefined;
         }
         return true;
@@ -35,7 +35,7 @@ export class CreateTransactionPaymentDto {
     @ApiProperty({
         enum: PaymentMethod,
         description:
-            'Payment method. CASH accepts legacy amount or V1 amount_received; QRIS uses manual cashier confirmation.',
+            'Payment method. CASH accepts legacy amount or V1 amount_received; QRIS and EDC are record-only.',
     })
     @IsEnum(PaymentMethod)
     @Validate(PaymentTransportShapeConstraint)

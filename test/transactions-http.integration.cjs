@@ -1,8 +1,6 @@
 // TS_NODE_PROJECT=test/tsconfig.hardening.json TRANSACTION_TEST_DATABASE_URL=... node --require ts-node/register/transpile-only --test test/transactions-http.integration.cjs
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { readFileSync } = require('node:fs');
-const { join } = require('node:path');
 const { test } = require('node:test');
 const { Client } = require('pg');
 const { PrismaClient } = require('@prisma/client');
@@ -13,6 +11,7 @@ const { JwtService } = require('@nestjs/jwt');
 const request = require('supertest');
 const { AppModule } = require('../src/app.module');
 const { PrismaService } = require('../src/prisma/prisma.service');
+const { applyRepositoryMigrations, assertLatestMigrationApplied } = require('./helpers/test-migrations.cjs');
 
 test('Transactions HTTP endpoints with real JWT guard and database', {skip: !process.env.TRANSACTION_TEST_DATABASE_URL}, async t => {
     const connectionString = process.env.TRANSACTION_TEST_DATABASE_URL;
@@ -23,9 +22,8 @@ test('Transactions HTTP endpoints with real JWT guard and database', {skip: !pro
     try {
         await admin.query(`CREATE SCHEMA "${schema}"`);
         await admin.query(`SET search_path TO "${schema}"`);
-        for(const name of ['20260914000000_baseline','20260914000100_transaction_tenant_integrity','20260915000000_optional_tenant_tax','20260915010000_add_customers','20260915020000_add_cashier_sessions','20260918000000_add_product_track_stock','20260926000000_auth_v2_schema_preparation','20260926010000_add_device_session_refresh_hash_unique']) {
-            await admin.query(readFileSync(join(__dirname,'../prisma/migrations',name,'migration.sql'),'utf8').replaceAll('"public"',`"${schema}"`));
-        }
+        const migrationNames = await applyRepositoryMigrations(admin, schema);
+        await assertLatestMigrationApplied(admin, migrationNames);
         db = new PrismaClient({adapter:new PrismaPg({connectionString},{schema})});
         const module = await Test.createTestingModule({imports:[AppModule]}).overrideProvider(PrismaService).useValue(db).compile();
         app=module.createNestApplication();
@@ -42,7 +40,9 @@ test('Transactions HTTP endpoints with real JWT guard and database', {skip: !pro
         const auth=token(owner), authB=token(ownerB), cashAuth=token(cashier);
         const product=await db.products.create({data:{tenant_id:a.id,name:'Product',sku:'P',price:100,cost:50}});
         await db.product_stocks.create({data:{outlet_id:oa.id,product_id:product.id,stock:20}});
-        const body=()=>({client_transaction_id:randomUUID(),outlet_id:oa.id,items:[{product_id:product.id,quantity:2}],payment:{method:'CASH',amount:500}});
+        const ownerSession = await db.cashier_sessions.create({data:{tenant_id:a.id,outlet_id:oa.id,user_id:owner.id,opening_cash:0}});
+        let cashierSessionId = randomUUID();
+        const body=(sessionId=ownerSession.id)=>({client_transaction_id:randomUUID(),outlet_id:oa.id,cashier_session_id:sessionId,items:[{product_id:product.id,quantity:2}],payment:{method:'CASH',amount:500}});
         const seed=async(tenant,outlet,user,status,date)=>db.transactions.create({data:{tenant_id:tenant.id,outlet_id:outlet.id,user_id:user.id,client_transaction_id:randomUUID(),status,created_at:new Date(date)}});
         const pending=await seed(a,oa,owner,'PENDING','2026-01-01T00:00:00Z');
         const voided=await seed(a,oa2,owner,'VOID','2026-01-02T00:00:00Z');
@@ -60,35 +60,37 @@ test('Transactions HTTP endpoints with real JWT guard and database', {skip: !pro
         await t.test('POST creates CASH checkout through CurrentUser and nested DTO',async()=>{
             const payload=body();const r=await http.post('/transactions').set('Authorization',`Bearer ${auth}`).send(payload).expect(201);
             assert.equal(r.body.status,'COMPLETED');assert.equal(r.body.user_id,owner.id);assert.equal(r.body.total,200);assert.equal(r.body.change,300);
-            assert.equal(r.body.payments[0].status,'PAID');assert.equal(r.body.items[0].unit_cost,undefined);
+            assert.equal(r.body.payments[0].status,'PAID');assert.equal(r.body.items[0].unit_cost,50);
             const detail=await get(`/transactions/${r.body.transaction_id}`).expect(200);assert.deepEqual(detail.body,r.body);
             assert.equal((await db.product_stocks.findFirstOrThrow({where:{product_id:product.id}})).stock,18);
         });
         await t.test('POST requires an open cashier shift at the requested outlet',async()=>{
-            const withoutShift=body();
+            const withoutShift=body(cashierSessionId);
             const missing=await http.post('/transactions').set('Authorization',`Bearer ${cashAuth}`).send(withoutShift).expect(403);
-            assert.equal(missing.body.error_code,'OPEN_SHIFT_REQUIRED');
+            assert.equal(missing.body.error_code,'INVALID_CASHIER_SESSION');
             assert.equal(await db.transactions.count({where:{client_transaction_id:withoutShift.client_transaction_id}}),0);
 
-            const shift=await db.cashier_sessions.create({data:{tenant_id:a.id,outlet_id:oa2.id,user_id:cashier.id,opening_cash:0}});
-            const mismatch=body();
+            const shift=await db.cashier_sessions.create({data:{id:cashierSessionId,tenant_id:a.id,outlet_id:oa2.id,user_id:cashier.id,opening_cash:0}});
+            const mismatch=body(cashierSessionId);
             const rejected=await http.post('/transactions').set('Authorization',`Bearer ${cashAuth}`).send(mismatch).expect(403);
-            assert.equal(rejected.body.error_code,'SHIFT_OUTLET_MISMATCH');
+            assert.equal(rejected.body.error_code,'SESSION_OUTLET_MISMATCH');
             assert.equal(await db.transactions.count({where:{client_transaction_id:mismatch.client_transaction_id}}),0);
 
             await db.cashier_sessions.update({where:{id:shift.id},data:{outlet_id:oa.id}});
-            const accepted=await http.post('/transactions').set('Authorization',`Bearer ${cashAuth}`).send(body()).expect(201);
+            const accepted=await http.post('/transactions').set('Authorization',`Bearer ${cashAuth}`).send(body(cashierSessionId)).expect(201);
             assert.equal(accepted.body.user_id,cashier.id);
         });
         await t.test('invalid nested inputs, QRIS and route IDs are rejected',async()=>{
-            for(const patch of [{items:[]},{items:[{product_id:product.id,quantity:0}]},{payment:{method:'QRIS'}},{payment:{method:'CASH'}}]){
+            for(const patch of [{items:[]},{items:[{product_id:product.id,quantity:0}]},{payment:{method:'CASH'}}]){
                 await http.post('/transactions').set('Authorization',`Bearer ${auth}`).send({...body(),...patch}).expect(400);
             }
+            const qris = await http.post('/transactions').set('Authorization',`Bearer ${auth}`).send({...body(), payment:{method:'QRIS'}}).expect(201);
+            assert.equal(qris.body.change, null);
             await get('/transactions/not-a-uuid').expect(400);
             await get(`/transactions/${randomUUID()}`).expect(404);
         });
         await t.test('list and detail never expose the other tenant',async()=>{
-            const list=await get('/transactions').expect(200);assert.equal(list.body.meta.total,4);
+            const list=await get('/transactions').expect(200);assert.equal(list.body.meta.total,5);
             assert.ok(list.body.data.every(row=>row.transaction_id!==foreign.id));
             await get(`/transactions/${foreign.id}`).expect(404);
             await get(`/transactions/${pending.id}`,authB).expect(404);
@@ -97,20 +99,20 @@ test('Transactions HTTP endpoints with real JWT guard and database', {skip: !pro
         });
         await t.test('pagination, status, outlet and exclusive end-date filters work',async()=>{
             const first=await get('/transactions?page=1&limit=1').expect(200), second=await get('/transactions?page=2&limit=1').expect(200);
-            assert.equal(first.body.meta.total_pages,4);assert.equal(first.body.data.length,1);assert.notEqual(first.body.data[0].transaction_id,second.body.data[0].transaction_id);
-            const dates=await get('/transactions?start_date=2026-01-01T00:00:00Z&end_date=2026-01-02T00:00:00Z').expect(200);
+            assert.equal(first.body.meta.total_pages,5);assert.equal(first.body.data.length,1);assert.notEqual(first.body.data[0].transaction_id,second.body.data[0].transaction_id);
+            const dates=await get('/transactions?from=2026-01-01T00:00:00Z&to=2026-01-02T00:00:00Z').expect(200);
             assert.deepEqual(dates.body.data.map(r=>r.transaction_id),[pending.id]);
             const status=await get('/transactions?status=VOID').expect(200);assert.equal(status.body.data[0].transaction_id,voided.id);
             const outlet=await get(`/transactions?outlet_id=${oa2.id}`).expect(200);assert.equal(outlet.body.meta.total,1);
             const empty=await get('/transactions?status=CANCELLED').expect(200);assert.deepEqual(empty.body,{data:[],meta:{page:1,limit:20,total:0,total_pages:0}});
         });
         await t.test('invalid query values fail validation',async()=>{
-            for(const query of ['page=0','limit=101','page=1.5','page=9007199254740991&limit=100','status=PAID','outlet_id=bad','start_date=2026-02-30T00:00:00Z','start_date=2026-01-02T00:00:00Z&end_date=2026-01-01T00:00:00Z']){
+            for(const query of ['page=0','limit=101','page=1.5','page=9007199254740991&limit=100','status=PAID','outlet_id=bad','from=2026-02-30T00:00:00Z','from=2026-01-02T00:00:00Z&to=2026-01-01T00:00:00Z']){
                 await get(`/transactions?${query}`).expect(400);
             }
         });
         await t.test('cashier reads only assigned outlet and current DB role overrides token',async()=>{
-            const list=await get('/transactions',cashAuth).expect(200);assert.equal(list.body.meta.total,3);assert.ok(list.body.data.every(row=>row.outlet_id===oa.id));
+            const list=await get('/transactions',cashAuth).expect(200);assert.equal(list.body.meta.total,4);assert.ok(list.body.data.every(row=>row.outlet_id===oa.id));
             await get(`/transactions/${voided.id}`,cashAuth).expect(404);
             await get(`/transactions?outlet_id=${oa2.id}`,cashAuth).expect(403);
             await db.users.update({where:{id:cashier.id},data:{outlet_id:null}});await get('/transactions',cashAuth).expect(403);

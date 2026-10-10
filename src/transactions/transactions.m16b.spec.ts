@@ -170,6 +170,24 @@ describe('TransactionsService M16B extraction regression', () => {
     });
   });
 
+  describe('EDC record-only transaction behavior', () => {
+    it('persists the authoritative total with null tender and change', async () => {
+      const tx = makeTx();
+      const { service: s } = service(tx);
+      await s.executeTransactionCore(tx, { ...user, sub: user.sub.toLowerCase(), tenant_id: user.tenant_id.toLowerCase() }, input({ payment: { method: PaymentMethod.EDC } }), 'V1');
+      expect(tx.payments.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ method: 'EDC', amount: 300n, amount_received: null, change_amount: null }),
+      }));
+    });
+
+    it('rejects cash fields on EDC', async () => {
+      const tx = makeTx();
+      const { service: s } = service(tx);
+      await expect(s.executeTransactionCore(tx, { ...user, sub: user.sub.toLowerCase(), tenant_id: user.tenant_id.toLowerCase() }, input({ payment: { method: PaymentMethod.EDC, amount_received: 500 } }), 'V1'))
+        .rejects.toThrow(BadRequestException);
+    });
+  });
+
   describe('product/modifier validation unchanged', () => {
     it('rejects missing required SINGLE selection', async () => {
       const tx = makeTx({
@@ -289,6 +307,16 @@ describe('TransactionsService M16B extraction regression', () => {
       const { service: s } = service(tx);
       await expect(s.executeTransactionCore(tx, { ...user, sub: user.sub.toLowerCase(), tenant_id: user.tenant_id.toLowerCase() }, input({ payment: { method: PaymentMethod.CASH, amount_received: 600 } }), 'V1'))
         .rejects.toThrow(ConflictException);
+    });
+
+    it('replays identical EDC and rejects EDC/CASH or EDC/QRIS method mismatches', async () => {
+      const edcRow = response({ payments: [{ id: 'p', method: 'EDC', status: 'PAID', amount: 300n, amount_received: null, change_amount: null, paid_at: new Date() }] });
+      const tx = makeTx({ transactions: { ...makeTx().transactions, findFirst: jest.fn<any>().mockResolvedValue(edcRow) } });
+      const { service: s } = service(tx);
+      await expect(s.executeTransactionCore(tx, { ...user, sub: user.sub.toLowerCase(), tenant_id: user.tenant_id.toLowerCase() }, input({ payment: { method: PaymentMethod.EDC } }), 'V1')).resolves.toBeDefined();
+      await expect(s.executeTransactionCore(tx, { ...user, sub: user.sub.toLowerCase(), tenant_id: user.tenant_id.toLowerCase() }, input({ payment: { method: PaymentMethod.CASH, amount_received: 300 } }), 'V1')).rejects.toThrow(ConflictException);
+      await expect(s.executeTransactionCore(tx, { ...user, sub: user.sub.toLowerCase(), tenant_id: user.tenant_id.toLowerCase() }, input({ payment: { method: PaymentMethod.QRIS } }), 'V1')).rejects.toThrow(ConflictException);
+      expect(tx.transactions.create).not.toHaveBeenCalled();
     });
   });
 

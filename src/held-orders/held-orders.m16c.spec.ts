@@ -1309,6 +1309,20 @@ describe('HeldOrdersService M16C conversion (mocked core)', () => {
     expect(dto.payment.amount_received).toBeUndefined();
   });
 
+  it('EDC parity: held-order checkout forwards only the record-only method', async () => {
+    const tx = makeTx();
+    const svc = mockTransactionsService(tx);
+    tx.held_orders.findFirst.mockResolvedValue(heldOrder());
+    const { service: subject } = service(tx, svc);
+    await subject.checkout(user, id.order, {
+      expected_version: 1,
+      client_transaction_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      payment: { method: PaymentMethod.EDC },
+    } as any);
+    const dto = svc.executeTransactionCore.mock.calls[0][2] as any;
+    expect(dto.payment).toEqual({ method: 'EDC' });
+  });
+
   it('does not use held-order snapshot prices as authoritative', async () => {
     const tx = makeTx();
     const svc = mockTransactionsService(tx);

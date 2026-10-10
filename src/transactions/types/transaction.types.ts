@@ -15,4 +15,5 @@ export enum PaymentStatus {
 export enum PaymentMethod {
     CASH = 'CASH',
     QRIS = 'QRIS',
+    EDC = 'EDC',
 }

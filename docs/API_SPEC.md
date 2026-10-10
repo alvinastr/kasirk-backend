@@ -13,7 +13,7 @@ Dokumen ini mendefinisikan kontrak REST API untuk KasirKita POS yang digunakan o
 - Android POS / cashier application
 - Next.js web dashboard
 - Backend NestJS
-- Payment gateway integration
+- Future payment gateway integration (out of scope for M18A)
 - Offline transaction synchronization
 
 API harus konsisten dengan ERD Final V1 dan `DATABASE_SCHEMA.sql`.
@@ -61,7 +61,7 @@ Endpoint public V1:
 ```text
 POST /auth/login
 POST /auth/register          (jika registration flow diaktifkan)
-POST /payments/webhook/:provider
+POST /payments/webhook/:provider (future provider integration)
 ```
 
 Webhook tidak menggunakan JWT client. Webhook harus diverifikasi menggunakan mekanisme signature/secret dari payment provider.
@@ -925,33 +925,34 @@ hanya setelah payment dianggap berhasil.
 
 ---
 
-## 13.6 QRIS Transaction Flow
+## 13.6 QRIS and EDC Record-Only Transaction Flow
+
+QRIS is a manual/static record-only payment. EDC records a payment that the
+cashier has already confirmed as approved on an external physical terminal.
+KasirKita does not generate a dynamic QRIS, communicate with an EDC terminal,
+bank, gateway, acquirer, or webhook, and no webhook is required for either
+method.
 
 ```text
-POST /transactions
+Cashier confirms external QRIS or EDC payment
        ↓
-Transaction PENDING
+POST /transactions with the supported record-only method
        ↓
-Payment PENDING
+Backend resolves the authoritative transaction total
        ↓
-Create QRIS payment
+Payment PAID and transaction COMPLETED atomically
        ↓
-Customer pays
-       ↓
-Payment Provider Webhook
-       ↓
-Verify webhook
-       ↓
-Payment PAID
-       ↓
-Deduct stock
-       ↓
-Create SALE movement
-       ↓
-Transaction COMPLETED
+Deduct stock and create SALE movement
 ```
 
-Client tidak boleh mengubah payment menjadi `PAID`.
+For QRIS and EDC, the request contains only the method according to the
+record-only payment contract. The backend persists the authoritative
+transaction total and leaves `amount_received`, `change_amount`, `provider`,
+and `provider_reference` NULL. No card number, CVV, cardholder name, expiry,
+PIN, or other sensitive payment data is accepted or stored.
+
+Any future provider-integrated payment flow is out of scope for this contract
+and must not be mixed with QRIS or EDC record-only checkout.
 
 ---
 
@@ -1107,7 +1108,11 @@ GET /transactions/:transactionId
 
 # 16. Payment API
 
-## 16.1 Create QRIS Payment
+## 16.1 Future Integrated QRIS Provider Flow (out of scope for M18A)
+
+The provider-backed endpoint below is a future integration example only. It is
+not the current QRIS contract: M18A QRIS is manual/static and record-only, and
+does not generate a dynamic QR or use a provider webhook.
 
 ```http
 POST /payments/qris
@@ -1148,7 +1153,15 @@ transactions.total
 
 ---
 
-## 16.2 Get Payment Status
+## 16.2 Record-only EDC Payment
+
+EDC represents payment already approved on an external physical terminal. The
+request contains only `method: "EDC"`; it has no terminal, bank, provider, or
+card-data integration. The backend stores the authoritative transaction total
+and leaves cash tender, change, and provider fields NULL. QRIS follows the same
+record-only rules with its distinct persisted method.
+
+## 16.3 Get Payment Status
 
 ```http
 GET /payments/:paymentId
@@ -1172,7 +1185,10 @@ GET /payments/:paymentId
 
 ---
 
-# 17. Payment Webhook
+# 17. Future Payment Webhook (out of scope for M18A record-only payments)
+
+This section documents a future provider integration only. QRIS and EDC
+record-only checkout do not call this endpoint.
 
 ```http
 POST /payments/webhook/:provider
@@ -1322,7 +1338,7 @@ Historical `unit_cost` digunakan agar perubahan product cost tidak mengubah lapo
 | View stock movement | ✅ | ✅ | Limited |
 | Create transaction | ✅ | ✅ | ✅ |
 | View transactions | ✅ | ✅ | Own/outlet |
-| Create QRIS payment | ✅ | ✅ | ✅ |
+| Create future integrated QRIS payment | ✅ | ✅ | ✅ |
 | View reports | ✅ | ✅ | Limited/No |
 | Tenant administration | ✅ | Limited | ❌ |
 
@@ -1376,7 +1392,8 @@ untuk memastikan transaksi tidak dibuat dua kali.
 
 # 21. Idempotency Rules
 
-Idempotency berlaku untuk:
+For the future integrated provider flow (out of scope for M18A), idempotency
+applies to:
 
 ```text
 POST /transactions
@@ -1528,6 +1545,8 @@ Android POS
 ┌──────────────────────┐
 │ NestJS API           │
 │                      │
+Future provider-integrated payment architecture (out of scope for M18A):
+
 │ Auth                 │
 │ RBAC                 │
 │ Tenant Isolation     │
@@ -1614,8 +1633,8 @@ PUT adalah full replacement. Seluruh field editable wajib dikirim. Field text nu
 10. Historical `unit_price` dan `unit_cost` tidak boleh berubah.
 11. Offline transaction wajib menggunakan `client_transaction_id`.
 12. Duplicate sync tidak boleh membuat transaksi kedua.
-13. Webhook payment wajib diverifikasi.
-14. Duplicate webhook tidak boleh mengurangi stock dua kali.
+13. Future provider payment webhooks wajib diverifikasi.
+14. Duplicate future provider webhooks tidak boleh mengurangi stock dua kali.
 15. Semua money values menggunakan integer IDR.
 16. Semua tenant-scoped query harus menggunakan tenant context dari JWT.
 17. Reports dihitung dari historical transaction data, bukan dari current product price/cost.
@@ -1637,7 +1656,7 @@ Stock Movement
 Transactions
 Offline Transaction Sync
 Cash Payment
-QRIS Payment Contract
+QRIS and EDC Record-only Payment Contract
 Payment Webhook Contract
 Daily Sales Report
 RBAC
@@ -1681,7 +1700,7 @@ Urutan implementasi backend yang direkomendasikan:
 9. Transactions
 10. Offline sync/idempotency
 11. Cash payment
-12. QRIS/payment abstraction
+12. QRIS/EDC record-only payment abstraction
 13. Webhook
 14. Reports
 15. Automated tests

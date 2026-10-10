@@ -2,8 +2,6 @@
 // The test creates and drops only a random PostgreSQL schema.
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
-const { existsSync, readFileSync, readdirSync } = require('node:fs');
-const { join } = require('node:path');
 const { test } = require('node:test');
 const { ValidationPipe } = require('@nestjs/common');
 const { JwtService } = require('@nestjs/jwt');
@@ -14,6 +12,7 @@ const { Client } = require('pg');
 const request = require('supertest');
 const { AppModule } = require('../src/app.module');
 const { PrismaService } = require('../src/prisma/prisma.service');
+const { applyRepositoryMigrations, assertLatestMigrationApplied } = require('./helpers/test-migrations.cjs');
 
 const connectionString =
   process.env.CUSTOMER_TEST_DATABASE_URL || process.env.DATABASE_URL;
@@ -32,16 +31,8 @@ test(
       await admin.query(`CREATE SCHEMA "${schema}"`);
       await admin.query(`SET search_path TO "${schema}"`);
 
-      const migrationsDirectory = join(__dirname, '../prisma/migrations');
-      for (const name of readdirSync(migrationsDirectory).sort()) {
-        const migrationFile = join(migrationsDirectory, name, 'migration.sql');
-        if (!existsSync(migrationFile)) continue;
-        const sql = readFileSync(migrationFile, 'utf8').replaceAll(
-          '"public"',
-          `"${schema}"`,
-        );
-        await admin.query(sql);
-      }
+      const migrationNames = await applyRepositoryMigrations(admin, schema);
+      await assertLatestMigrationApplied(admin, migrationNames);
 
       db = new PrismaClient({
         adapter: new PrismaPg({ connectionString }, { schema }),
@@ -112,7 +103,7 @@ test(
       await db.product_stocks.create({
         data: { outlet_id: outletA.id, product_id: product.id, stock: 10 },
       });
-      await db.cashier_sessions.create({
+      const cashierSession = await db.cashier_sessions.create({
         data: {
           tenant_id: tenantA.id,
           outlet_id: outletA.id,
@@ -213,12 +204,13 @@ test(
         },
       );
 
-      const transactionBody = (customerId) => ({
+      const transactionBody = (customerId, sessionId = cashierSession.id) => ({
         client_transaction_id: randomUUID(),
         outlet_id: outletA.id,
         ...(customerId ? { customer_id: customerId } : {}),
         items: [{ product_id: product.id, quantity: 1 }],
         payment: { method: 'CASH', amount: 100 },
+        cashier_session_id: sessionId,
       });
 
       await t.test(
@@ -285,7 +277,7 @@ test(
             http
               .post('/transactions')
               .send(transactionBody(foreignCustomer.id)),
-            ownerToken,
+            cashierToken,
           ).expect(404);
           const stockAfter = await db.product_stocks.findFirstOrThrow({
             where: { outlet_id: outletA.id, product_id: product.id },

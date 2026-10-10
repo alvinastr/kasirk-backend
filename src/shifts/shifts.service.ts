@@ -259,11 +259,13 @@ export class ShiftsService {
     });
     let cash = 0n;
     let qris = 0n;
+    let edc = 0n;
     const products = new Map<string, { product_id: string; product_name: string; quantity: number }>();
     for (const sale of sales) {
       for (const payment of sale.payments) {
         if (payment.method === 'CASH') cash += payment.amount;
         if (payment.method === 'QRIS') qris += payment.amount;
+        if (payment.method === 'EDC') edc += payment.amount;
       }
       for (const item of sale.transaction_items) {
         const name = item.product_name_snapshot ?? item.products?.name ?? 'Unknown product';
@@ -282,7 +284,12 @@ export class ShiftsService {
       shift_id: shift.id, status: shift.status, outlet: shift.outlets, cashier: shift.users,
       opened_at: shift.opened_at, closed_at: shift.closed_at, generated_at: new Date(),
       transaction_count: totals._count._all,
-      totals: { sales: this.optionalMoney(totals._sum.total ?? 0n), cash: this.optionalMoney(cash), qris: this.optionalMoney(qris) },
+      totals: {
+        sales: this.optionalMoney(totals._sum.total ?? 0n),
+        cash: this.optionalMoney(cash),
+        qris: this.optionalMoney(qris),
+        edc: this.optionalMoney(edc),
+      },
       products: [...products.values()],
     };
   }

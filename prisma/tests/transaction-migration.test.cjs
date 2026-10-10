@@ -10,6 +10,7 @@ const url = process.env.MIGRATION_TEST_DATABASE_URL;
 const baseline = readFileSync(join(__dirname, '../migrations/20260914000000_baseline/migration.sql'), 'utf8');
 const migration = readFileSync(join(__dirname, '../migrations/20260914000100_transaction_tenant_integrity/migration.sql'), 'utf8');
 const trackStockMigration = readFileSync(join(__dirname, '../migrations/20260918000000_add_product_track_stock/migration.sql'), 'utf8');
+const edcMigration = readFileSync(join(__dirname, '../migrations/20261010000000_add_edc_payment_method_m18a/migration.sql'), 'utf8');
 
 async function withSchema(run) {
     const schema = `migration_${randomUUID().replaceAll('-', '')}`;
@@ -119,6 +120,33 @@ test('transaction database migrations', { skip: !url }, async (t) => {
         const sql = 'INSERT INTO transactions(tenant_id,outlet_id,user_id,client_transaction_id) VALUES($1,$2,$3,$4)';
         await rejected(db, sql, [x.a,x.outlet,x.user,x.clientId], '23505');
         await db.query(sql, [x.b,x.otherOutlet,x.otherUser,x.clientId]);
+    }));
+
+    await t.test('M18A upgrades populated CASH/QRIS data and accepts only EDC as the new method', () => withSchema(async (db) => {
+        const x = await seed(db);
+        const qrisTransaction = randomUUID();
+        await db.query("INSERT INTO transactions(id,tenant_id,outlet_id,user_id,client_transaction_id,status,subtotal,total) VALUES($1,$2,$3,$4,$5,'COMPLETED',100,100)", [qrisTransaction,x.a,x.outlet,x.user,randomUUID()]);
+        await db.query("INSERT INTO payments(id,transaction_id,method,status,amount,paid_at) VALUES($1,$2,'QRIS','PAID',100,'2026-01-01T00:01:00Z')", [randomUUID(),qrisTransaction]);
+        await db.query(migration);
+        await db.query(edcMigration);
+        const methods = (await db.query('SELECT method FROM payments ORDER BY method')).rows.map((row) => row.method);
+        assert.deepEqual(methods, ['CASH', 'QRIS']);
+        await db.query("INSERT INTO payments(id,tenant_id,transaction_id,method,status,amount,paid_at) VALUES($1,$2,$3,'EDC','PAID',200,'2026-01-01T00:01:00Z')", [randomUUID(), x.a, x.transaction]);
+        await rejected(db, "INSERT INTO payments(id,tenant_id,transaction_id,method,status,amount,paid_at) VALUES($1,$2,$3,'UNKNOWN','PAID',200,'2026-01-01T00:01:00Z')", [randomUUID(), x.a, x.transaction], '23514');
+        const constraint = await db.query("SELECT conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='payments'::regclass AND conname='chk_payments_method'");
+        assert.equal(constraint.rowCount, 1);
+        assert.match(constraint.rows[0].definition, /CASH/);
+        assert.match(constraint.rows[0].definition, /QRIS/);
+        assert.match(constraint.rows[0].definition, /EDC/);
+        assert.equal((await db.query("SELECT count(*) FROM pg_constraint WHERE conrelid='payments'::regclass AND conname='chk_payments_method'")).rows[0].count, '1');
+    }));
+
+    await t.test('M18A applies cleanly to the full migration chain with the expected named CHECK', () => withSchema(async (db) => {
+        await db.query(migration);
+        await db.query(edcMigration);
+        const constraint = await db.query("SELECT conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid='payments'::regclass AND conname='chk_payments_method'");
+        assert.deepEqual(constraint.rows.map((row) => row.conname), ['chk_payments_method']);
+        assert.match(constraint.rows[0].definition, /EDC/);
     }));
 
     for (const scenario of ['foreign outlet', 'foreign product', 'invalid total', 'invalid item subtotal']) {

@@ -167,7 +167,7 @@ export class TransactionsService {
             const payment = dto.payment as unknown;
             if (payment !== null && typeof payment === 'object' && !Array.isArray(payment)) {
                 const method = (payment as { method?: unknown }).method;
-                if (method === PaymentMethod.CASH || method === PaymentMethod.QRIS) {
+                if (method === PaymentMethod.CASH || method === PaymentMethod.QRIS || method === PaymentMethod.EDC) {
                     this.assertPaymentShape(dto);
                 }
             }
@@ -814,7 +814,7 @@ export class TransactionsService {
             const persistedTender = payment.amount_received ?? payment.amount;
             return persistedTender === requestedTender;
         }
-        if (dto.payment.method === PaymentMethod.QRIS) {
+        if (dto.payment.method === PaymentMethod.QRIS || dto.payment.method === PaymentMethod.EDC) {
             return payment.amount_received === null && payment.change_amount === null;
         }
         return false;
@@ -830,7 +830,7 @@ export class TransactionsService {
     /**
      * M5: Validate payment shape before transaction processing.
      * - CASH: exactly one of legacy amount or V1 amount_received.
-     * - QRIS: no cash fields.
+     * - QRIS/EDC: no cash fields.
      */
     private assertPaymentShape(dto: CheckoutDto) {
         const p = dto.payment;
@@ -857,10 +857,10 @@ export class TransactionsService {
             }
             return;
         }
-        if (p.method === PaymentMethod.QRIS) {
+        if (p.method === PaymentMethod.QRIS || p.method === PaymentMethod.EDC) {
             if (p.amount !== undefined || p.amount_received !== undefined) {
                 throw new BadRequestException({
-                    message: 'QRIS must not carry cash payment fields',
+                    message: `${p.method} must not carry cash payment fields`,
                     error_code: 'PAYMENT_FIELD_NOT_ALLOWED',
                 });
             }

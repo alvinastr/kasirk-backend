@@ -1,5 +1,8 @@
 # KasirKita POS - Project Status
 
+M18A backend support adds the record-only `EDC` payment method. CASH and QRIS
+contracts remain backward compatible; Android M18B is not complete.
+
 ## Project Overview
 
 KasirKita adalah aplikasi Point of Sales (POS) multi-tenant.

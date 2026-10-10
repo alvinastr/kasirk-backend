@@ -15,7 +15,12 @@ Keep the verified existing database values:
 
 - transactions: `PENDING`, `COMPLETED`, `CANCELLED`, `VOID`
 - payments: `PENDING`, `PAID`, `FAILED`, `CANCELLED`
-- payment methods: `CASH`, `QRIS`
+- payment methods: `CASH`, `QRIS`, `EDC` (VARCHAR(20) plus `chk_payments_method` CHECK; not a PostgreSQL enum)
+
+`20261010000000_add_edc_payment_method_m18a` replaces only that CHECK inside
+an explicit transaction. It does not rewrite the column or existing rows and
+does not require a backfill. CASH and QRIS remain valid; unknown methods remain
+rejected.
 
 The latest PROJECT_STATUS examples use transaction `PAID` and payment `SUCCESS`; these are **not** accepted database values. Resolve the API naming discrepancy before implementing checkout. No existing statuses are rewritten by these migrations.
 

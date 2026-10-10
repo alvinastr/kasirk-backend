@@ -117,7 +117,7 @@ describe('ShiftsService V1-M6', () => {
     tx.transactions.aggregate.mockResolvedValue({ _sum: { total: null }, _count: { _all: 0 } });
     tx.transactions.findMany.mockResolvedValue([]);
     const result = await service(tx).service.summary(cashierUser, id.shift);
-    expect(result).toMatchObject({ transaction_count: 0, totals: { sales: 0, cash: 0, qris: 0 }, products: [], closed_at: null });
+    expect(result).toMatchObject({ transaction_count: 0, totals: { sales: 0, cash: 0, qris: 0, edc: 0 }, products: [], closed_at: null });
   });
 
   it.each([false, true])('reads CLOSED summary with historical reconciliation populated=%s without mutation', async (legacy) => {
@@ -125,10 +125,23 @@ describe('ShiftsService V1-M6', () => {
     tx.cashier_sessions.findFirst.mockResolvedValue(shift({ status: 'CLOSED', closed_at: closedAt,
       ...(legacy ? { opening_cash: 100n, closing_cash: 450n, expected_cash: 450n, difference: 0n } : {}) }));
     const result = await service(tx).service.summary(cashierUser, id.shift);
-    expect(result).toMatchObject({ status: 'CLOSED', closed_at: closedAt, totals: { sales: 575, cash: 350, qris: 225 } });
+    expect(result).toMatchObject({ status: 'CLOSED', closed_at: closedAt, totals: { sales: 575, cash: 350, qris: 225, edc: 0 } });
     expect(result).not.toHaveProperty('closing_cash');
     expect(tx.cashier_sessions.updateMany).not.toHaveBeenCalled();
     expect(() => JSON.stringify(result)).not.toThrow();
+  });
+
+  it('keeps EDC in its own bucket and out of cash', async () => {
+    const tx = makeTx();
+    tx.cashier_sessions.findFirst.mockResolvedValue(shift());
+    tx.transactions.aggregate.mockResolvedValue({ _sum: { total: 600n }, _count: { _all: 3 } });
+    tx.transactions.findMany.mockResolvedValue([
+      { payments: [{ method: 'CASH', status: 'PAID', amount: 100n }], transaction_items: [] },
+      { payments: [{ method: 'QRIS', status: 'PAID', amount: 200n }], transaction_items: [] },
+      { payments: [{ method: 'EDC', status: 'PAID', amount: 300n }], transaction_items: [] },
+    ]);
+    const result = await service(tx).service.summary(cashierUser, id.shift);
+    expect(result.totals).toEqual({ sales: 600, cash: 100, qris: 200, edc: 300 });
   });
 
   it('preserves legacy reconciliation values on the current read response', async () => {
