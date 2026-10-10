@@ -1,7 +1,41 @@
 # KasirKita POS - Project Status
 
-M18A backend support adds the record-only `EDC` payment method. CASH and QRIS
-contracts remain backward compatible; Android M18B is not complete.
+M18A backend support for record-only `EDC` is **DEPLOYED** to production as of
+2026-10-10 (Asia/Jakarta). CASH and QRIS contracts remain backward compatible;
+Android M18B is complete and its physical QA passed. M18 is closed across the
+backend and Android repositories.
+
+## M18A — Record-only EDC Backend (DEPLOYED)
+
+- Implementation commit: `9bb7748aedc68a9f04e618341a29f7af57f5a69a`.
+- Production deployment: 2026-10-10 Asia/Jakarta; migration
+  `20261010000000_add_edc_payment_method_m18a` applied as part of the complete
+  14-migration chain.
+- `payments.method` remains `VARCHAR(20)` with `chk_payments_method`, accepting
+  only `CASH`, `QRIS`, and `EDC`. Existing CASH and QRIS rows remain valid.
+- EDC is record-only: no card, bank, provider, gateway, webhook, or other
+  sensitive payment data is accepted or stored. Legacy RC2 sync remains
+  CASH-only.
+- Production backend image:
+  `sha256:4a63d1934d8322ef939c6fbdf180875bde6986cc4e14baa0506eada3bb1e9da2`.
+  Application and PostgreSQL health checks passed; public health returned
+  `{"status":"ok"}`.
+- Backup and rollback image were created before deployment. The rollback path
+  remains available if a production rollback is required.
+- Post-deployment QA counts: CASH 13 payment rows / 13 transactions, QRIS 6 / 6,
+  EDC 2 / 2. No duplicate EDC payment was observed. Transaction identifiers,
+  credentials, and customer data are intentionally not recorded here.
+- Verification before deployment: migration 14/14, focused M18A 200/200, full
+  unit 354/354, integration 184/184, isolated PostgreSQL 16.15 verification,
+  SQLSTATE 23514 unknown-method rejection, Prisma/build/lint/diff gates all
+  passed.
+
+## M18 Maintenance Note
+
+The following non-blocking Node PostgreSQL warning remains for maintenance
+follow-up and was not an M18 failure:
+
+`Calling client.query() when the client is already executing a query is deprecated and will be removed in pg@9.0.`
 
 ## Project Overview
 
